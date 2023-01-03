@@ -105,9 +105,9 @@ class Fieldtypes extends WireArray {
 	 */
 	protected function preload() {
 		if($this->preloaded) return;
-		$debug = $this->isAPI && $this->wire('config')->debug; 
+		$debug = $this->isAPI && $this->wire()->config->debug; 
 		if($debug) Debug::timer('Fieldtypes.preload'); 
-		$modules = $this->wire('modules'); /** @var Modules $modules */
+		$modules = $this->wire()->modules;
 		foreach($this->data as $moduleName => $module) {
 			if($module instanceof ModulePlaceholder) {
 				$fieldtype = $modules->getModule($moduleName); 
@@ -224,6 +224,7 @@ class Fieldtypes extends WireArray {
 	protected function filterData($selectors, $not = false) { $this->preload(); return parent::filterData($selectors, $not); }
 	public function makeCopy() { $this->preload(); return parent::makeCopy(); }
 	public function makeNew() { $this->preload(); return parent::makeNew(); }
+	#[\ReturnTypeWillChange] 
 	public function getIterator() { $this->preload(); return parent::getIterator(); }
 	public function getNext($item, $strict = true) { $this->preload(); return parent::getNext($item, $strict); }
 	public function getPrev($item, $strict = true) { $this->preload(); return parent::getPrev($item, $strict); }

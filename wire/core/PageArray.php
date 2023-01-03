@@ -75,7 +75,7 @@ class PageArray extends PaginatedArray implements WirePaginatable {
 	protected $keyIndex = array();
 
 	/**
-	 * Template mehod that descendant classes may use to validate items added to this WireArray
+	 * Template method that descendant classes may use to validate items added to this WireArray
 	 * 
 	 * #pw-internal
 	 *
@@ -578,7 +578,7 @@ class PageArray extends PaginatedArray implements WirePaginatable {
 			$value = $item->getProperty($property); 
 			if(is_null($value)) {
 				$value = $item->first();
-				$value = $this->getItemPropertyValue($value, $property);
+				if($value) $value = $this->getItemPropertyValue($value, $property);
 			}
 		} else {
 			$value = $item->$property;
@@ -597,6 +597,7 @@ class PageArray extends PaginatedArray implements WirePaginatable {
 	 * @return Page[]|\ArrayObject|PageArrayIterator
 	 *
 	 */
+	#[\ReturnTypeWillChange] 
 	public function getIterator() {
 		if($this->lazyLoad) return new PageArrayIterator($this->data, $this->finderOptions);	
 		return parent::getIterator();

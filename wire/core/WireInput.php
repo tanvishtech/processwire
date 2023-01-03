@@ -113,6 +113,8 @@ class WireInput extends Wire {
 		'DELETE' => 'DELETE',
 		'OPTIONS' => 'OPTIONS',
 		'PATCH' => 'PATCH',
+		'CONNECT' => 'CONNECT',
+		'TRACE' => 'TRACE',
 	);
 
 	/**
@@ -128,6 +130,8 @@ class WireInput extends Wire {
 	 * Set for lazy loading
 	 * 
 	 * Must be called before accessing any get/post/cookie input
+	 * 
+	 * #pw-internal
 	 * 
 	 * @param bool $lazy
 	 * 
@@ -376,7 +380,7 @@ class WireInput extends Wire {
 	 * 
 	 * The whitelist is a list of variables specifically set by the application as sanitized for use elsewhere in the application.
 	 * This whitelist is not specifically used by ProcessWire unless you populate it from your templates or the API. 
-	 * When populated, it is used by the MarkupPagerNav module (for instance) to ensure that sanitizedd query string (GET) variables 
+	 * When populated, it is used by the MarkupPagerNav module (for instance) to ensure that sanitized query string (GET) variables 
 	 * are maintained across paginations. 
 	 * 
 	 * ~~~~~
@@ -673,8 +677,10 @@ class WireInput extends Wire {
 	 *
 	 */
 	public function setUrlSegment($num, $value) {
+		$config = $this->wire()->config;
+		$sanitizer = $this->wire()->sanitizer;
 		$num = (int) $num; 
-		$maxLength = $this->wire('config')->maxUrlSegmentLength;
+		$maxLength = $config->maxUrlSegmentLength;
 		if($maxLength < 1) $maxLength = 128;
 		if(is_null($value)) {
 			// unset
@@ -687,14 +693,31 @@ class WireInput extends Wire {
 			$this->urlSegments = $urlSegments;
 		} else {
 			// sanitize to standard PW name format
-			$urlSegment = $this->wire('sanitizer')->name($value, false, $maxLength);
+			$urlSegment = $sanitizer->name($value, false, $maxLength);
 			// if UTF-8 mode and value changed during name sanitization, try pageNameUTF8 instead
-			if($urlSegment !== $value && $this->wire('config')->pageNameCharset == 'UTF8') {
-				$urlSegment = $this->wire('sanitizer')->pageNameUTF8($value, $maxLength);
+			if($urlSegment !== $value && $config->pageNameCharset == 'UTF8') {
+				$urlSegment = $sanitizer->pageNameUTF8($value, $maxLength);
 			}
 			$this->urlSegments[$num] = $urlSegment;
 		}
-		
+	}
+
+	/**
+	 * Set/replace all URL segments
+	 *
+	 * #pw-group-URL-segments
+	 * #pw-internal
+	 *
+	 * @param array $urlSegments Regular/non-indexed PHP array where first element is first URL segment
+	 * @since 3.0.186
+	 *
+	 */
+	public function setUrlSegments(array $urlSegments) {
+		$n = 1;
+		foreach($urlSegments as $urlSegment) {
+			$this->setUrlSegment($n, $urlSegment);
+			$n++;
+		}
 	}
 	
 	/**
@@ -1035,7 +1058,9 @@ class WireInput extends Wire {
 	/**
 	 * Same as httpUrl() method but always uses https scheme, rather than current request scheme
 	 * 
-	 * See httpUrl() method for argument and usage details. 
+	 * See httpUrl() method for argument and usage details.
+	 * 
+	 * #pw-group-URLs
 	 * 
 	 * @param array|bool $options Specify `withQueryString` (bool) option, or in 3.0.167+ you can also use an options array:
 	 *  - `withQueryString` (bool): Include the query string as well? (if present, default=false)
@@ -1089,7 +1114,9 @@ class WireInput extends Wire {
 	 * Generate canonical URL for current page and request
 	 * 
 	 * Canonical URL includes full scheme, hostname, path and optionally: 
-	 * URL segments, page numbers and query string. 
+	 * URL segments, page numbers and query string.
+	 * 
+	 * #pw-group-URLs
 	 * 
 	 * @param array $options
 	 *  - `scheme` (string|bool): Scheme "https", "http", or omit to auto-detect (default='').

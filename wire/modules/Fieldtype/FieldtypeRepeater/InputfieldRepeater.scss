@@ -7,6 +7,20 @@
 		}
 	}
 	
+	.InputfieldRepeaterPaste {
+		display: none;
+	}
+	&.InputfieldRepeaterCanPaste {
+		.InputfieldRepeaterPaste {
+			display: inline-block;
+		}
+	}
+
+	.InputfieldRepeaterItemHasDepth {
+		// avoids white left background where indent is
+		background: transparent;
+	}
+	
 	.InputfieldRepeaterItem  > .InputfieldHeader {
 		line-height: 1em;
 		padding: 0.5em 0 0.5em 0.4em;
@@ -26,6 +40,7 @@
 			}
 			.InputfieldRepeaterItemControls {
 				display: block;
+				opacity: 1.0;
 				padding-right: 0.5em;
 				padding-left: 0.5em;
 				margin-top: 0.5em;
@@ -33,18 +48,21 @@
 				top: 0;
 				right: 0;
 				z-index: 1;
-				display: block;
 				white-space: nowrap;
 				height: 100%;
-
 				
 				.InputfieldRepeaterSettingsToggle,
 				.InputfieldRepeaterClone,
 				.InputfieldRepeaterToggle,
 				.InputfieldRepeaterTrash,
+				.InputfieldRepeaterInsertBefore,
+				.InputfieldRepeaterInsertAfter,
 				.toggle-icon {
 					cursor: pointer;
 					float: right;
+					&:hover {
+						opacity: 0.8;
+					}
 				}
 				.InputfieldRepeaterTrash {
 					padding-right: 3px;
@@ -55,6 +73,12 @@
 				.InputfieldRepeaterClone {
 					margin-right: 1em;
 				}
+				.InputfieldRepeaterInsertBefore {
+					margin-right: 0.75em;
+				}
+				.InputfieldRepeaterInsertAfter {
+					margin-right: 1em;
+				}
 				.InputfieldRepeaterSettingsToggle {
 					margin-right: 1em;
 				}
@@ -62,13 +86,56 @@
 					opacity: 0.3;	
 				}
 			}
-
+			
+			&:hover .InputfieldRepeaterItemControls {
+				opacity: 1.0;
+				transition: opacity 300ms;
+			}
+		
+			&.InputfieldRepeaterItemOOB .InputfieldRepeaterItemControls {
+				// items out of bounds (OOB) hide controls
+				display: none;
+			}
+			
 			.toggle-icon {
 				line-height: 1em;
 				margin-right: 0.5em;
 			}
 		}
+
+	}
+	
+	.InputfieldRepeaterItem {
+		// prevents longer item headers from going outside Inputfield box horizontally 
+		max-width: 100%;
+		box-sizing: border-box;
 		
+		// repeater item that has DELETE pending
+		&.InputfieldRepeaterDeletePending {
+			> .InputfieldRepeaterHeaderInit > .InputfieldRepeaterItemControls {
+				// keep just the trash icon visible when item marked for deletion
+				display: block;
+				opacity: 1.0;
+				*:not(.InputfieldRepeaterTrash):not(.toggle-icon) {
+					display: none !important;
+				}
+			}
+		}
+	}
+	
+	&:not(.InputfieldRepeaterLoudControls) > .InputfieldContent > .Inputfields > .InputfieldRepeaterItem {
+		// repeater item that does NOT have delete pending
+		&:not(.InputfieldRepeaterDeletePending) {
+			> .InputfieldRepeaterHeaderInit:not(:hover) > .InputfieldRepeaterItemControls {
+				opacity: 0;
+				transition: opacity 500ms;
+			}
+		}
+	}
+
+	
+	& > .InputfieldContent > .Inputfields > .InputfieldRepeaterInsertItem {
+		opacity: 0.5;
 	}
 	
 	.InputfieldStateCollapsed .InputfieldRepeaterSettingsToggle {

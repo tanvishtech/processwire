@@ -175,6 +175,7 @@ class InputfieldDatetimeText extends InputfieldDatetimeType {
 		$out =
 			"<input " . $this->inputfield->getAttributesString($attrs) . " " .
 			"value='$value' " .
+			"autocomplete='off' " . 
 			"data-dateformat='$dateFormatJS' " .
 			"data-timeformat='$timeFormatJS' " .
 			"data-timeselect='$timeInputSelect' " .
@@ -311,7 +312,7 @@ class InputfieldDatetimeText extends InputfieldDatetimeType {
 			if($timeInputFormat == $format) $f->attr('value', $format);
 		}
 		$f->attr('onchange', "$('#Inputfield_timeInputFormat').val($(this).val());");
-		$f->collapsed = Inputfield::collapsedBlank;
+		// $f->collapsed = Inputfield::collapsedBlank;
 		$f->columnWidth = 50;
 		$fieldset->add($f);
 

@@ -3,10 +3,10 @@
 /**
  * ProcessWire Inputfield for CKEditor
  *
- * CKEditor Copyright (C) 2003-2021, CKSource - Frederico Knabben
+ * CKEditor Copyright (C) 2003-2022, CKSource - Frederico Knabben
  * http://ckeditor.com
  *
- * ProcessWire 3.x, Copyright 2021 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  * 
  * FIELD CONFIGURATION
@@ -40,10 +40,10 @@ class InputfieldCKEditor extends InputfieldTextarea implements ConfigModule {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'CKEditor',
-			'version' => 168, 
+			'version' => 170, 
 			'summary' => __('CKEditor textarea rich text editor.', __FILE__),
 			'installs' => array('MarkupHTMLPurifier'), 
-			);
+		);
 	}
 
 	const toggleCleanDIV = 2;  	// remove <div>s
@@ -91,7 +91,7 @@ class InputfieldCKEditor extends InputfieldTextarea implements ConfigModule {
 	 * Version number for CKEditor directory
 	 *
 	 */
-	const CKEDITOR_VERSION = '4.16.0';
+	const CKEDITOR_VERSION = '4.18.0';
 
 	/**
 	 * Instance of MarkupHTMLPurifier module
@@ -529,11 +529,12 @@ class InputfieldCKEditor extends InputfieldTextarea implements ConfigModule {
 		//$out = parent::___render() . "<script>CKEDITOR.replace('$this->id', config.$this->configName);</script>";
 		$this->addClass('InputfieldCKEditorNormal');
 		$this->attr('data-configName', $this->configName); 
+		$script = 'script';
 		$out = parent::___render() . 
-			"<script>" . 
+			"<$script>" . 
 			"ProcessWire.config.InputfieldCKEditor.editors.$this->id = '$this->configName';" .
 			"config.InputfieldCKEditor.editors.$this->id = '$this->configName';" . 
-			"</script>";
+			"</$script>";
 		return $out; 
 	}
 
@@ -559,6 +560,13 @@ class InputfieldCKEditor extends InputfieldTextarea implements ConfigModule {
 		if((int) $this->inlineMode > 1 && (int) $this->attr('rows') > 1) {
 			$height = (((int) $this->attr('rows')) * 2) . 'em';
 			$attrs['style'] = "overflow:auto;height:$height";
+		}
+		
+		// allow for custom data attributes
+		foreach($this->getAttributes() as $attrName => $attrVal) {
+			if(strpos($attrName, 'data-') !== 0) continue;
+			if(isset($attrs[$attrName])) continue;
+			$attrs[$attrName] = $attrVal;
 		}
 		
 		$attrs = $this->getAttributesString($attrs);

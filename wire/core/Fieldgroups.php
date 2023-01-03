@@ -7,12 +7,16 @@
  * #pw-body For full details on all methods available in a Fieldgroup, be sure to also see the `WireArray` class.
  * #pw-var $fieldgroups
  * 
- * ProcessWire 3.x, Copyright 2016 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
- * 
+ *
+ * @method Fieldgroup clone(Saveable $item, $name = '')
  * @method int saveContext(Fieldgroup $fieldgroup)
  * @method array getExportData(Fieldgroup $fieldgroup)
  * @method array setImportData(Fieldgroup $fieldgroup, array $data)
+ * 
+ * @method void fieldRemoved(Fieldgroup $fieldgroup, Field $field)
+ * @method void fieldAdded(Fieldgroup $fieldgroup, Field $field)
  *
  *
  */
@@ -20,16 +24,19 @@
 class Fieldgroups extends WireSaveableItemsLookup {
 
 	/**
-	 * Instances of FieldgroupsArray
+	 * Instance of FieldgroupsArray
 	 * 
 	 * @var FieldgroupsArray
 	 *
 	 */
-	protected $fieldgroupsArray; 
-	
+	protected $fieldgroupsArray = null;
+
+	/**
+	 * Init
+	 * 
+	 */
 	public function init() {
-		$this->fieldgroupsArray = $this->wire(new FieldgroupsArray());
-		$this->load($this->fieldgroupsArray);
+		$this->getWireArray();
 	}
 
 	/**
@@ -41,7 +48,7 @@ class Fieldgroups extends WireSaveableItemsLookup {
 	 */
 	protected function getLoadQuery($selectors = null) {
 		$query = parent::getLoadQuery($selectors); 
-		$lookupTable = $this->wire('database')->escapeTable($this->getLookupTable()); 
+		$lookupTable = $this->wire()->database->escapeTable($this->getLookupTable()); 
 		$query->select("$lookupTable.data"); // QA
 		return $query; 
 	}
@@ -69,6 +76,20 @@ class Fieldgroups extends WireSaveableItemsLookup {
 	 *
 	 */
 	public function getAll() {
+		if($this->useLazy()) $this->loadAllLazyItems();
+		return $this->getWireArray();
+	}
+	
+	/**
+	 * @return WireArray|FieldgroupsArray
+	 *
+	 */
+	public function getWireArray() {
+		if($this->fieldgroupsArray === null) {
+			$this->fieldgroupsArray = new FieldgroupsArray();
+			$this->wire($this->fieldgroupsArray);
+			$this->load($this->fieldgroupsArray);
+		}
 		return $this->fieldgroupsArray;
 	}
 
@@ -112,7 +133,14 @@ class Fieldgroups extends WireSaveableItemsLookup {
 	 *
 	 */
 	public function getNumTemplates(Fieldgroup $fieldgroup) {
-		return count($this->getTemplates($fieldgroup)); 
+		$templates = $this->wire()->templates;
+		$num = 0;
+		
+		foreach($templates->getAllValues('fieldgroups_id', 'id') as $templateId => $fieldgroupId) {
+			if($fieldgroupId == $fieldgroup->id) $num++;
+		}
+		
+		return $num;
 	}
 
 	/**
@@ -123,11 +151,59 @@ class Fieldgroups extends WireSaveableItemsLookup {
 	 *
 	 */
 	public function getTemplates(Fieldgroup $fieldgroup) {
-		$templates = $this->wire(new TemplatesArray());
-		foreach($this->wire('templates') as $tpl) {
-			if($tpl->fieldgroup->id == $fieldgroup->id) $templates->add($tpl); 
+		$templates = $this->wire()->templates;
+		$items = $this->wire(new TemplatesArray()); /** @var TemplatesArray $items */
+		
+		foreach($templates->getAllValues('fieldgroups_id', 'id') as $templateId => $fieldgroupId) {
+			if($fieldgroupId == $fieldgroup->id) {
+				$template = $templates->get($templateId);
+				$items->add($template);
+			}
 		}
-		return $templates; 
+		
+		return $items; 
+	}
+
+	/**
+	 * Get all field names used by given fieldgroup
+	 * 
+	 * Use this when you want to identify the field names (or IDs) without loading the fieldgroup or fields in it.
+	 * 
+	 * @param string|int|Fieldgroup $fieldgroup Fieldgroup name, ID or object
+	 * @return array Returned array of field names indexed by field ID
+	 * @since 3.0.194
+	 * 
+	 */
+	public function getFieldNames($fieldgroup) {
+		$fieldNames = array();
+		$useLazy = $this->useLazy();
+		if(!$useLazy && !is_object($fieldgroup)) $fieldgroup = $this->get($fieldgroup);
+		if($fieldgroup instanceof Fieldgroup) {
+			foreach($fieldgroup as $field) {
+				$fieldNames[$field->id] = $field->name;
+			}
+			return $fieldNames;
+		}
+		$fieldIds = array();
+		if(ctype_digit("$fieldgroup") && $useLazy) {
+			foreach(array_keys($this->lazyItems) as $key) {
+				$row = &$this->lazyItems[$key];
+				if("$row[id]" === "$fieldgroup" && $row['fields_id']) {
+					$fieldIds[] = (int) $row['fields_id'];
+				}
+			}
+		} else if($fieldgroup) {
+			foreach(array_keys($this->lazyItems) as $key) {
+				$row = &$this->lazyItems[$key];
+				if("$row[name]" === "$fieldgroup" && $row['fields_id']) {
+					$fieldIds[] = (int) $row['fields_id'];
+				}
+			}
+		}
+		if(count($fieldIds)) {
+			$fieldNames = $this->wire()->fields->getAllValues('name', 'id', 'id', $fieldIds);
+		}
+		return $fieldNames;
 	}
 
 	/**
@@ -142,52 +218,78 @@ class Fieldgroups extends WireSaveableItemsLookup {
 	 */
 	public function ___save(Saveable $item) {
 
-		$database = $this->wire('database');
+		$database = $this->wire()->database;
+
+		/** @var Fieldgroup $fieldgroup */
+		$fieldgroup = $item;
+		$datas = array();
+		$fieldsAdded = array();
+		$fieldsRemoved = array();
 		
-		/** @var Fieldgroup $item */
+		if($fieldgroup->id && $fieldgroup->removedFields) {
 
-		if($item->id && $item->removedFields) {
-
-			foreach($this->wire('templates') as $template) {
-				if($template->fieldgroup->id !== $item->id) continue; 
-				foreach($item->removedFields as $field) {
+			foreach($this->wire()->templates as $template) {
+				if($template->fieldgroup->id !== $fieldgroup->id) continue; 
+				foreach($fieldgroup->removedFields as $field) {
 					// make sure the field is valid to delete from this template
-					$error = $this->isFieldNotRemoveable($field, $item, $template);
+					$error = $this->isFieldNotRemoveable($field, $fieldgroup, $template);
 					if($error !== false) throw new WireException("$error Save of fieldgroup changes aborted.");
 					if($field->type) $field->type->deleteTemplateField($template, $field); 
-					$item->finishRemove($field); 
+					$fieldgroup->finishRemove($field); 
+					$fieldsRemoved[] = $field;
 				}
 			}
 
-			$item->resetRemovedFields();
+			$fieldgroup->resetRemovedFields();
 		}
 
-		$contextData = array();
-		if($item->id) { 
-			// save context data
-			$query = $database->prepare("SELECT fields_id, data FROM fieldgroups_fields WHERE fieldgroups_id=:item_id"); 
-			$query->bindValue(":item_id", (int) $item->id, \PDO::PARAM_INT); 
+		if($fieldgroup->id) { 
+			// load context data to populate back after fieldgroup save
+			$sql = 'SELECT fields_id, data FROM fieldgroups_fields WHERE fieldgroups_id=:fieldgroups_id'; 
+			$query = $database->prepare($sql); 
+			$query->bindValue(':fieldgroups_id', (int) $fieldgroup->id, \PDO::PARAM_INT); 
 			$query->execute();
 			/** @noinspection PhpAssignmentInConditionInspection */
 			while($row = $query->fetch(\PDO::FETCH_ASSOC)) {
-				$contextData[$row['fields_id']] = $row['data'];
+				$fields_id = (int) $row['fields_id'];
+				$datas[$fields_id] = $row['data'];
 			}
 			$query->closeCursor();
 		}
+		
+		$result = parent::___save($fieldgroup);
+		
+		// identify any fields added
+		foreach($fieldgroup as $field) {
+			if(!array_key_exists($field->id, $datas)) {
+				$fieldsAdded[] = $field;
+			}
+		}
 
-		$result = parent::___save($item); 
-
-		if(count($contextData)) {
+		if(count($datas)) {
 			// restore context data
-			foreach($contextData as $fields_id => $data) {
-				$fieldgroups_id = (int) $item->id; 
-				$fields_id = (int) $fields_id; 
-				$query = $database->prepare("UPDATE fieldgroups_fields SET data=:data WHERE fieldgroups_id=:fieldgroups_id AND fields_id=:fields_id"); // QA
-				$query->bindValue(":data", $data, \PDO::PARAM_STR); 
+			$fieldgroups_id = (int) $fieldgroup->id; 
+			foreach($datas as $fields_id => $data) {
+				$sql = "UPDATE fieldgroups_fields SET data=:data WHERE fieldgroups_id=:fieldgroups_id AND fields_id=:fields_id";
+				$query = $database->prepare($sql);
+				if($data === null) {
+					$query->bindValue(":data", null, \PDO::PARAM_NULL);
+				} else {
+					$query->bindValue(":data", $data, \PDO::PARAM_STR);
+				}
 				$query->bindValue(":fieldgroups_id", $fieldgroups_id, \PDO::PARAM_INT);
 				$query->bindValue(":fields_id", $fields_id, \PDO::PARAM_INT); 
 				$query->execute();
 			}
+		}
+
+		// trigger any fields added
+		foreach($fieldsAdded as $field) {
+			$this->fieldAdded($fieldgroup, $field);
+		}
+		// trigger any fieldsl removed
+		foreach($fieldsRemoved as $field) {
+			$this->fieldRemoved($fieldgroup, $field);
 		}
 
 		return $result;
@@ -270,7 +372,7 @@ class Fieldgroups extends WireSaveableItemsLookup {
 		foreach($contexts as $fieldID => $context) {
 			$field = $fieldgroup->getFieldContext((int) $fieldID); 
 			if(!$field) continue;
-			if($this->wire('fields')->saveFieldgroupContext($field, $fieldgroup)) $numSaved++;
+			if($this->wire()->fields->saveFieldgroupContext($field, $fieldgroup)) $numSaved++;
 		}
 		return $numSaved; 
 	}
@@ -486,5 +588,28 @@ class Fieldgroups extends WireSaveableItemsLookup {
 		return false;
 	}
 
+	/**
+	 * Hook called when field has been added to fieldgroup
+	 * 
+	 * #pw-hooker
+	 * 
+	 * @param Fieldgroup $fieldgroup
+	 * @param Field $field
+	 * @since 3.0.193
+	 * 
+	 */
+	public function ___fieldAdded(Fieldgroup $fieldgroup, Field $field) { }
+
+	/**
+	 * Hook called when field has been removed from fieldgroup
+	 * 
+	 * #pw-hooker
+	 *
+	 * @param Fieldgroup $fieldgroup
+	 * @param Field $field
+	 * @since 3.0.193
+	 *
+	 */
+	public function ___fieldRemoved(Fieldgroup $fieldgroup, Field $field) { }
 }
 

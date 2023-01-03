@@ -321,7 +321,13 @@ class Modules extends WireArray {
 		parent::__construct();
 		$this->addPath($path); 
 	}
-	
+
+	/**
+	 * Wired to API
+	 * 
+	 * #pw-internal
+	 * 
+	 */
 	public function wired() {
 		$this->coreModulesDir = '/' . $this->wire('config')->urls->data('modules');
 		parent::wired();
@@ -416,6 +422,7 @@ class Modules extends WireArray {
 			if(empty($info['singular'])) continue;
 			$file = $this->paths[1] . "$moduleName/$moduleName.module.php";
 			if(!file_exists($file) || !$this->includeModuleFile($file, $moduleName)) continue;
+			if(!isset($info['namespace'])) $info['namespace'] = '';
 			$className = $info['namespace'] . $moduleName;
 			$module = $this->newModule($className, $moduleName);
 			if($module) parent::set($moduleName, $module);
@@ -999,7 +1006,7 @@ class Modules extends WireArray {
 		// check if module has already been loaded, or maybe we've got duplicates
 		if(wireClassExists($basename, false)) { 
 			$module = parent::get($basename);
-			$dir = rtrim($this->wire('config')->paths->$basename, '/');
+			$dir = rtrim((string) $this->wire()->config->paths->$basename, '/');
 			if($module && $dir && $dirname != $dir) {
 				$duplicates->recordDuplicate($basename, $pathname, "$dir/$filename", $installed);
 				return '';
@@ -1486,7 +1493,7 @@ class Modules extends WireArray {
 		}
 
 		$info = $this->getModuleInfo($module ? $module : $moduleName);
-		if(empty($info['permission']) && empty($info['permissionMethod'])) return $strict ? false : true;
+		if(empty($info['permission']) && empty($info['permissionMethod'])) return ($strict ? false : true);
 		
 		if(is_null($user)) $user = $this->wire('user'); 	
 		if($user && $user->isSuperuser()) return true;
@@ -1506,7 +1513,8 @@ class Modules extends WireArray {
 			);
 			$method = $info['permissionMethod'];
 			$this->includeModule($moduleName);
-			return $className::$method($data);
+			if(method_exists($className, $method)) return $className::$method($data);
+			return false;
 		}
 		
 		return true; 
@@ -4341,7 +4349,7 @@ class Modules extends WireArray {
 		
 		if($isModule && $namespace) {
 			$actualNamespace = $this->getModuleNamespace($moduleName);
-			if(trim($namespace, '\\') != trim($actualNamespace, '\\')) {
+			if(trim("$namespace", '\\') != trim("$actualNamespace", '\\')) {
 				$isModule = false;
 			}
 		}

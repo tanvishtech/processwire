@@ -22,14 +22,13 @@
  * 
  * Thanks to @horst for his assistance with several methods in this class.
  * 
- * ProcessWire 3.x, Copyright 2019 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  * 
  * @method bool|string send($url, $data = array(), $method = 'POST', array $options = array())
  * @method int sendFile($filename, array $options = array(), array $headers = array())
  * @method string download($fromURL, $toFile, array $options = array())
  * 
- * @todo add proxy server support (3.0.150+)
  *
  */
 
@@ -51,7 +50,13 @@ class WireHttp extends Wire {
 	 * #pw-internal
 	 *
 	 */
-	const defaultDownloadTimeout = 50; 
+	const defaultDownloadTimeout = 50;
+
+	/**
+	 * Default content-type header for POST requests
+	 * 
+	 */
+	const defaultPostContentType = 'application/x-www-form-urlencoded; charset=utf-8';
 
 	/**
 	 * Default value for request $headers, when reset
@@ -224,6 +229,14 @@ class WireHttp extends Wire {
 	 *
 	 */
 	protected $responseHeaderArrays = array();
+
+	/**
+	 * Cookies to set for next curl get/post request
+	 * 
+	 * @var array
+	 * 
+	 */
+	protected $setCookies = array();
 	
 	/**
 	 * Error messages
@@ -307,7 +320,7 @@ class WireHttp extends Wire {
 	 *
 	 */
 	public function post($url, $data = array(), array $options = array()) {
-		if(!isset($this->headers['content-type'])) $this->setHeader('content-type', 'application/x-www-form-urlencoded; charset=utf-8');
+		if(!isset($this->headers['content-type'])) $this->setHeader('content-type', self::defaultPostContentType);
 		return $this->send($url, $data, 'POST', $options);
 	}
 
@@ -409,6 +422,7 @@ class WireHttp extends Wire {
 		return $this->status($url, $data, true, $options); 
 	}
 
+
 	/**
 	 * Send the given $data array to a URL using given method (i.e. POST, GET, PUT, DELETE, etc.)
 	 * 
@@ -420,75 +434,139 @@ class WireHttp extends Wire {
 	 * @param string $url URL to send to (including http:// or https://).
 	 * @param array $data Array of data to send (if not already set before).
 	 * @param string $method Method to use (either POST, GET, PUT, DELETE or others as needed).
-	 * @param array|string $options Options to modify behavior (this argument added in 3.0.124): 
-	 *  - `use` (string): What handler to use, one of 'auto', 'fopen', 'curl' or 'socket' (default='auto')
-	 *    If the 'auto' option is used, the method will first try fopen and then fallback to curl and sockets unless 'fallback' is disabled.
-	 *  - `fallback` (bool|string): Allow fallback to other methods? Applies only if 'use' option is 'auto'. (default=true)
-	 *    For a specific fallback method specify 'socket' or 'curl'
+	 * @param array|string $options Options to modify behavior. (This argument added in 3.0.124): 
+	 *  - `use` (string|array): What types(s) to use, one of 'fopen', 'curl', 'socket' to allow only
+	 *     that type. Or in 3.0.192+ this may be an array of types to attempt them in order. 
+	 *     Default in 3.0.192+ is [ 'curl', 'fopen', 'socket' ]. In prior versions default is 'auto' 
+	 *     which attempts: fopen, curl, then socket.
 	 * @return bool|string False on failure or string of contents received on success.
 	 *
 	 */
 	public function ___send($url, $data = array(), $method = 'POST', array $options = array()) {
-		
-		$defaults = array(
-			'use' => 'auto',
-			'fallback' => 'auto', // false, 'auto', 'socket' or 'curl'
-			'proxy' => '', 
-			'_url' => $url, // original unmodified URL
-		);
-
-		$options = array_merge($defaults, $options);
+	
+		$options = $this->sendOptions($url, $options);
 		$url = $this->validateURL($url, false);
-		$allowFopen = $this->hasFopen;
-		$allowCURL = $this->hasCURL && (version_compare(PHP_VERSION, '5.5') >= 0 || $options['use'] === 'curl'); // #849
 		$result = false;
+		$error = array();
 		
 		if(empty($url)) return false;
+		
 		$this->resetResponse();
 		
 		if(!empty($data)) $this->setData($data);
 		if(!isset($this->headers['user-agent'])) $this->setHeader('user-agent', $this->getUserAgent());
 		if(!in_array(strtoupper($method), $this->allowHttpMethods)) $method = 'POST';
-		if($allowFopen && strpos($url, 'https://') === 0 && !extension_loaded('openssl')) $allowFopen = false;
-
-		if($options['use'] === 'socket') {
-			// force socket
-			return $this->sendSocket($url, $method); 
-			
-		} else if($options['use'] === 'curl') {
-			// force curl
-			if(!$this->hasCURL) {
-				$this->error[] = 'CURL is not available';
-				return false;
-			} else if(!$allowCURL) {
-				$this->error[] = 'Using CURL requires PHP 5.5+'; 
-				return false;
+		
+		foreach($options['use'] as $use) {
+			$use = strtolower($use);
+			if($use === 'curl' && !$options['allowCURL']) {
+				$error[] = 'CURL is not available';
+			} else if($use === 'curl') {
+				$result = $this->sendCURL($url, $method, $options);
+			} else if($use === 'fopen' && !$options['allowFopen']) {
+				$error[] = 'fopen is not available';
+			} else if($use === 'fopen') {
+				$result = $this->sendFopen($url, $method, $options);
+			} else if($use === 'socket') {
+				$result = $this->sendSocket($options['_url'], $method);
 			} else {
-				return $this->sendCURL($url, $method, $options);
+				$error[] = "unrecognized type: $use";
 			}
-			
-		} else if($options['use'] === 'fopen' && !$allowFopen) {
-			$this->error[] = 'fopen is not available';
-			return false;
+			if($result !== false) break;
 		}
-
-		if($allowFopen) {
-			$result = $this->sendFopen($url, $method, $options);
-		} else if($options['fallback'] === false) {
-			$this->error[] = 'fopen not available and fallback option is disabled';
+	
+		if($result === false && count($error) && count($options['use']) < 3) {
+			// populate type errors only if request failed and specific options requested
+			$this->error = array_merge($this->error, $error);
 		}
 		
-		if($result === false && $options['fallback'] !== false) {
-			// on fopen fail fallback to CURL then sockets
-			if($allowCURL && $options['fallback'] !== 'socket') {
-				$result = $this->sendCURL($url, $method, $options);
-			}
-			if($result === false && $options['fallback'] !== 'curl') {
-				$result = $this->sendSocket($options['_url'], $method);
+		return $result;
+	}
+	
+	/**
+	 * Prepare options for send method(s)
+	 *
+	 * @param string $url
+	 * @param array $options
+	 * @return array
+	 *
+	 */
+	protected function sendOptions($url, array $options) {
+
+		$defaults = array(
+			'use' => array('curl', 'fopen', 'socket'),
+			'proxy' => '',
+			'_url' => $url, // original unmodified URL
+			'allowFopen' => true,
+			'allowCURL' => true,
+
+			// Options specific to fopen:
+			// -----------------------------------------------------------
+			/*
+			'fopen' => array(
+			   'http' => array(
+					'method' => '',
+					'timeout' => 0,
+					'content' => '',
+					'header' => '',
+					'proxy' => '',
+			   ), 
+			)
+			*/
+		
+			// Options specific to CURL:
+			// -----------------------------------------------------------
+			/*
+			'curl' => array(
+				'http' => array(
+					'proxy' => '',
+				),
+				'setopt' => array(
+					CURLOPT_OPTION => 'option value',
+				),
+			),
+			'curl_setopt' => array(
+				// recognized alias of options[curl][setopt]
+				CURLOPT_OPTION => 'option value',
+			),
+			*/
+		
+			// http option recognized by some types for legacy purposes
+			// -----------------------------------------------------------
+			/*
+			'http' => array(
+				'proxy' => '',
+			),
+			*/
+			
+			// Legacy options that have been replaced
+			// -----------------------------------------------------------
+			// 'fallback' => true, // 'auto', 'socket' or 'curl' 
+			// 'timeout' => 30, 
+		);
+
+		// if legacy 'fallback' option used then migrate it to 'use' option
+		if(!empty($options['fallback']) && is_string($options['fallback'])) {
+			if(empty($options['use']) || $options['use'] === 'auto') {
+				// duplicate behavior in versions prior to 3.0.192
+				$options['use'] = array('fopen', $options['fallback']);
 			}
 		}
 
-		return $result;
+		$options = array_merge($defaults, $options);
+
+		if($options['use'] === 'auto') $options['use'] = $defaults['use']; // auto forces default
+		if(!is_array($options['use'])) $options['use'] = array($options['use']);
+		if(empty($options['use'])) $options['use'] = $defaults['use'];
+
+		$allowFopen = $this->hasFopen;
+		if($allowFopen && stripos($url, 'https://') === 0 && !extension_loaded('openssl')) $allowFopen = false;
+		$options['allowFopen'] = $allowFopen;
+
+		$allowCURL = $this->hasCURL && (version_compare(PHP_VERSION, '5.5') >= 0 || $options['use'] === 'curl'); // #849
+		$options['allowCURL'] = $allowCURL;
+
+		return $options;
 	}
 
 	/**
@@ -587,6 +665,8 @@ class WireHttp extends Wire {
 		$this->lastSendType = 'curl';
 		$timeout = isset($options['timeout']) ? (float) $options['timeout'] : $this->getTimeout();
 		$postMethods = array('POST', 'PUT', 'DELETE', 'PATCH'); // methods for CURLOPT_POSTFIELDS
+		$isPost = in_array($method, $postMethods);
+		$contentType = isset($this->headers['content-type']) ? $this->headers['content-type'] : '';
 		$proxy = '';
 		
 		if(!empty($options['proxy'])) {
@@ -616,6 +696,10 @@ class WireHttp extends Wire {
 		}
 		
 		if(count($this->headers)) {
+			if($isPost && !empty($this->data) && $contentType === self::defaultPostContentType) {
+				// CURL does not work w/default POST content-type when sending POST variables array
+				$this->headers['content-type'] = 'multipart/form-data; charset=utf-8';
+			}
 			$headers = array();
 			foreach($this->headers as $name => $value) {
 				$headers[] = "$name: $value";
@@ -635,19 +719,19 @@ class WireHttp extends Wire {
 		// note: CURLOPT_PUT removed because it also requires CURLOPT_INFILE and CURLOPT_INFILESIZE.
 	
 		if($proxy) curl_setopt($curl, CURLOPT_PROXY, $proxy);
-		
+	
 		if(!empty($this->data)) {
-			if(in_array($method, $postMethods)) {
+			if($isPost) {
 				curl_setopt($curl, CURLOPT_POSTFIELDS, $this->data);
 			} else {
 				$content = http_build_query($this->data);
 				if(strlen($content)) $url .= (strpos($url, '?') === false ? '?' : '&') . $content;
 			}
 		} else if(!empty($this->rawData)) {
-			if(in_array($method, $postMethods)) {
+			if($isPost) {
 				curl_setopt($curl, CURLOPT_POSTFIELDS, $this->rawData);
 			} else {
-				throw new WireException("Raw data option with CURL not supported for $method"); 
+				throw new WireException("Raw data option with CURL not supported for $method");
 			}
 		}
 
@@ -669,6 +753,12 @@ class WireHttp extends Wire {
 		});
 
 		curl_setopt($curl, CURLOPT_URL, $url); 
+
+		$cookie = empty($options['cookie']) ? $this->setCookies : $options['cookie'];
+		if(!empty($cookie)) {
+			if(is_array($cookie)) $cookie = http_build_query($cookie, '', '; ', PHP_QUERY_RFC3986);
+			if(is_string($cookie) && !empty($cookie)) curl_setopt($curl, CURLOPT_COOKIE, $cookie);
+		}
 		
 		// custom CURL options provided in $options array
 		if(!empty($options['curl']) && !empty($options['curl']['setopt'])) {
@@ -752,6 +842,8 @@ class WireHttp extends Wire {
 			$request .= "$key: $value\r\n";
 		}
 
+		$request .= "Connection: close\r\n";
+
 		$response = '';
 		$errno = '';
 		$errstr = '';
@@ -805,7 +897,8 @@ class WireHttp extends Wire {
 	 * 	- `use` or `useMethod` (string): Specify "curl", "fopen" or "socket" to force a specific method (default=auto-detect).
 	 * 	- `timeout` (float): Number of seconds till timeout.
 	 * @return string Filename that was downloaded (including full path).
-	 * @throws WireException All error conditions throw exceptions. 
+	 * @throws WireException All error conditions throw exceptions.
+	 * @todo update the use option to support array like the send() method
 	 * 
 	 */
 	public function ___download($fromURL, $toFile, array $options = array()) {
@@ -1067,6 +1160,31 @@ class WireHttp extends Wire {
 	 */
 	public function getHeaders() {
 		return $this->headers;
+	}
+	
+	/**
+	 * Set cookie(s) for http GET/POST/etc. request (currently used by curl option only)
+	 *
+	 * ~~~~~
+	 * $http->setCookie('PHPSESSID', 'f3943z12339jz93j39iafai3f9393g');
+	 * $http->post('http://domain.com', [ 'foo' => 'bar' ], [ 'use' => 'curl' ]);
+	 * ~~~~~
+	 * 
+	 * #pw-group-request-headers
+	 *
+	 * @param string $name Name of cookie to set
+	 * @param string|int|null $value Specify value to set or null to remove
+	 * @return self
+	 * @since 3.0.199
+	 *
+	 */
+	public function setCookie($name, $value) {
+		if($value === null) {
+			unset($this->setCookies[$name]);
+		} else {
+			$this->setCookies[$name] = $value;
+		}
+		return $this;
 	}
 
 	/**

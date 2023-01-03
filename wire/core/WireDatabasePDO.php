@@ -5,7 +5,7 @@
  *
  * Serves as a wrapper to PHP’s PDO class
  * 
- * ProcessWire 3.x, Copyright 2021 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  *
  */
@@ -14,9 +14,38 @@
  * Database class provides a layer on top of mysqli
  * 
  * #pw-summary All database operations in ProcessWire are performed via this PDO-style database class.
+ * #pw-order-groups queries,transactions,schema,info,sanitization,connection
+ * #pw-var-database
+ * #pw-body =
+ * ProcessWire creates the database connection automatically at boot and this is available from the `$database` API variable. 
+ * If you want to create a new connection on your own, choose either option A or B below: 
+ * ~~~~~
+ * // The following are required to construct a WireDatabasePDO
+ * $dsn = 'mysql:dbname=mydb;host=myhost;port=3306';
+ * $username = 'username';
+ * $password = 'password';
+ * $driver_options = []; // optional
+ *
+ * // Construct option A
+ * $db = new WireDatabasePDO($dsn, $username, $password, $driver_options);
+ *
+ * // Construct option B
+ * $db = new WireDatabasePDO([
+ *   'dsn' => $dsn,
+ *   'user' => $username,
+ *   'pass' => $password,
+ *   'options' => $driver_options, // optional
+ *   'reader' => [ // optional
+ *     'dsn' => '…',
+ *     …
+ *   ],
+ *   …
+ * ]);
+ * ~~~~~
+ * #pw-body
  * 
  * @method void unknownColumnError($column) #pw-internal
- * @property bool $debugMode
+ * @property bool $debugMode #pw-internal
  *
  */
 class WireDatabasePDO extends Wire implements WireDatabase {
@@ -205,15 +234,28 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	protected $stopwordCache = null;
 
 	/**
-	 * Create a new PDO instance from ProcessWire $config API variable
+	 * Create a new connection instance from given ProcessWire $config API variable and return it
 	 *
 	 * If you need to make other PDO connections, just instantiate a new WireDatabasePDO (or native PDO)
 	 * rather than calling this getInstance method.
+	 * 
+	 * The following properties are pulled from given `$config` (see `Config` class for details): 
+	 * 
+	 * - `$config->dbUser`
+	 * - `$config->dbPass`
+	 * - `$config->dbName`
+	 * - `$config->dbHost`
+	 * - `$config->dbPort`
+	 * - `$config->dbSocket`
+	 * - `$config->dbCharset`
+	 * - `$config->dbOptions`
+	 * - `$config->dbReader`
+	 * - `$config->dbInitCommand`
+	 * - `$config->debug`
 	 *
 	 * #pw-internal
 	 *
 	 * @param Config $config
-	 *
 	 * @return WireDatabasePDO
 	 * @throws WireException
 	 *
@@ -438,7 +480,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 *
 	 * If connection is lost, this will restore it automatically.
 	 *
-	 * #pw-group-PDO
+	 * #pw-group-connection
 	 *
 	 * @param string|\PDOStatement|null SQL, statement, or statement type (reader or primary) (3.0.175+)
 	 *
@@ -526,31 +568,36 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Return correct PDO instance type (reader or writer) based on given statement
 	 *
-	 * @param string|\PDOStatement $statement
+	 * @param string|\PDOStatement $query
 	 * @param bool $getName Get name of PDO type rather than instance? (default=false)
 	 * @return \PDO|string
 	 *
 	 */
-	protected function pdoType(&$statement, $getName = false) {
+	protected function pdoType(&$query, $getName = false) {
 
 		$reader = 'reader';
 		$writer = 'writer';
 
-		if(!$this->reader['has']) return $getName ? $writer : $this->pdoWriter();
+		if(!$this->reader['has'] || !is_string($query)) {
+			// no reader available or query is PDOStatement, or other: always return writer
+			// todo support for inspecting PDOStatement?
+			return $getName ? $writer : $this->pdoWriter();
+		}
+		
+		// statement is just first 40 characters of query
+		$statement = trim(str_replace(array("\n", "\t", "\r"), " ", substr($query, 0, 40)));
 
 		if($statement === $writer || $statement === $reader) {
+			// reader or writer requested by name
 			$type = $statement;
-		} else if(!$this->reader['has']) {
-			$type = $writer;
-		} else if(!is_string($statement)) {
-			// PDOStatement or other, always return write
-			// @todo add support for inspection of PDOStatement
-			$type = $writer;
 		} else if(stripos($statement, 'select') === 0) {
+			// select query is always reader
 			$type = $reader;
 		} else if(stripos($statement, 'insert') === 0) {
+			// insert query is always writer
 			$type = $writer;
 		} else {
+			// other query to inspect further
 			$pos = strpos($statement, ' ');
 			$word = strtolower(($pos ? substr($statement, 0, $pos) : $statement));
 			if($word === 'set') {
@@ -600,7 +647,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Fetch the SQLSTATE associated with the last operation on the statement handle
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-connection
 	 * 
 	 * @return string
 	 * @link http://php.net/manual/en/pdostatement.errorcode.php
@@ -613,7 +660,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Fetch extended error information associated with the last operation on the database handle
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-connection
 	 * 
 	 * @return array
 	 * @link http://php.net/manual/en/pdo.errorinfo.php
@@ -626,7 +673,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Retrieve a database connection attribute
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-connection
 	 * 
 	 * @param int $attribute
 	 * @return mixed
@@ -640,7 +687,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Sets an attribute on the database handle
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-connection
 	 * 
 	 * @param int $attribute
 	 * @param mixed $value
@@ -655,7 +702,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Returns the ID of the last inserted row or sequence value
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-queries
+	 * #pw-group-info
 	 * 
 	 * @param string|null $name
 	 * @return string
@@ -669,7 +717,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Executes an SQL statement, returning a result set as a PDOStatement object
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-queries
 	 * 
 	 * @param string $statement
 	 * @param string $note
@@ -686,7 +734,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Initiates a transaction
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-transactions
 	 * 
 	 * @return bool
 	 * @link http://php.net/manual/en/pdo.begintransaction.php
@@ -700,7 +748,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Checks if inside a transaction
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-transactions
 	 * 
 	 * @return bool
 	 * @link http://php.net/manual/en/pdo.intransaction.php
@@ -713,7 +761,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Are transactions available with current DB engine (or table)?
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-transactions
 	 * 
 	 * @param string $table Optionally specify a table to specifically check to that table
 	 * @return bool
@@ -741,7 +789,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * 
 	 * Returns combined result of supportsTransaction() === true and inTransaction() === false.
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-transactions
 	 * 
 	 * @param string $table Optional table that transaction will be for
 	 * @return bool
@@ -755,7 +803,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Commits a transaction
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-transactions
 	 * 
 	 * @return bool
 	 * @link http://php.net/manual/en/pdo.commit.php
@@ -769,7 +817,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Rolls back a transaction
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-transactions
 	 * 
 	 * @return bool
 	 * @link http://php.net/manual/en/pdo.rollback.php
@@ -800,7 +848,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Prepare an SQL statement for accepting bound parameters
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-queries
 	 * 
 	 * @param string $statement
 	 * @param array|string|bool $driver_options Optionally specify one of the following: 
@@ -839,7 +887,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * 
 	 * If given a PDOStatement, this method behaves the same as the execute() method. 
 	 * 
-	 * #pw-group-PDO
+	 * #pw-group-queries
 	 * 
 	 * @param string|\PDOStatement $statement
 	 * @param string $note
@@ -874,7 +922,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * $database->execute($query);
 	 * ~~~~~
 	 * 
-	 * #pw-group-custom
+	 * #pw-group-queries
 	 *
 	 * @param \PDOStatement $query
 	 * @param bool $throw Whether or not to throw exception on query error (default=true)
@@ -968,7 +1016,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * 
 	 * Note that this method caches its result unless you specify boolean false for the $allowCache argument. 
 	 * 
-	 * #pw-group-custom
+	 * #pw-group-schema
 	 *
 	 * @param bool $allowCache Specify false if you don't want result to be cached or pulled from cache (default=true)
 	 * @return array Returns array of table names
@@ -993,11 +1041,14 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * is, and any extra information, such as whether it is auto_increment. The verbose option 
 	 * also makes the return value indexed by column name (associative array).
 	 * 
+	 * #pw-group-schema
+	 * 
 	 * @param string $table Table name or or `table.column` to get for specific column (when combined with verbose=true)
 	 * @param bool|int|string $verbose Include array of verbose information for each? (default=false)
 	 *  - Omit or false (bool) to just get column names. 
 	 *  - True (bool) or 1 (int) to get a verbose array of information for each column, indexed by column name.
 	 *  - 2 (int) to get raw MySQL column information, indexed by column name (added 3.0.182).
+	 *  - 3 (int) to get column types as used in a CREATE TABLE statement (added 3.0.185). 
 	 *  - Column name (string) to get verbose array only for only that column (added 3.0.182).
 	 * @return array 
 	 * @since 3.0.180
@@ -1005,9 +1056,20 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 */
 	public function getColumns($table, $verbose = false) {
 		$columns = array();
+		$table = $this->escapeTable($table);
+		if($verbose === 3) {
+			$query = $this->query("SHOW CREATE TABLE $table");
+			if(!$query->rowCount()) return array();
+			$row = $query->fetch(\PDO::FETCH_NUM);
+			$query->closeCursor();
+			if(!preg_match_all('/`([_a-z0-9]+)`\s+([a-z][^\r\n]+)/i', $row[1], $matches)) return array();
+			foreach($matches[1] as $key => $name) {
+				$columns[$name] = trim(rtrim($matches[2][$key], ','));
+			}
+			return $columns;
+		}
 		$getColumn = $verbose && is_string($verbose) ? $verbose : '';
 		if(strpos($table, '.')) list($table, $getColumn) = explode('.', $table, 2);
-		$table = $this->escapeTable($table);
 		$sql = "SHOW COLUMNS FROM $table " . ($getColumn ? 'WHERE Field=:column' : '');
 		$query = $this->prepare($sql);
 		if($getColumn) $query->bindValue(':column', $getColumn);
@@ -1038,6 +1100,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * 
 	 * By default it returns an array of index names. Specify true for the verbose option to get 
 	 * index `name`, `type` and `columns` (array) for each index. 
+	 * 
+	 * #pw-group-schema
 	 *
 	 * @param string $table Name of table to get indexes for or `table.index` (usually combined with verbose option).
 	 * @param bool|int|string $verbose Include array of verbose information for each? (default=false)
@@ -1091,6 +1155,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * information about the primary key. If you specify integer `2` then it returns an array of
 	 * raw MySQL SHOW INDEX information.
 	 * 
+	 * #pw-group-schema
+	 * 
 	 * @param string $table
 	 * @param bool|int $verbose Get array of info rather than column(s) string? (default=false)
 	 * @return string|array
@@ -1112,7 +1178,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Does the given table exist in this database?
 	 * 
-	 * #pw-group-custom
+	 * #pw-group-schema
 	 * 
 	 * @param string $table
 	 * @return bool
@@ -1148,7 +1214,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * }
 	 * ~~~~~
 	 *
-	 * #pw-group-custom
+	 * #pw-group-schema
 	 * 
 	 * @param string $table Specify table name (or table and column name in format "table.column").
 	 * @param string $column Specify column name (or omit or blank string if already specified in $table argument). 
@@ -1199,6 +1265,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * }
 	 * ~~~~
 	 * 
+	 * #pw-group-schema
+	 * 
 	 * @param string $table
 	 * @param string $indexName
 	 * @param bool $getInfo Return arrays of index information rather than boolean true? (default=false)
@@ -1234,9 +1302,70 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	}
 
 	/**
+	 * Rename table columns without changing type
+	 * 
+	 * #pw-group-schema
+	 * 
+	 * @param string $table
+	 * @param array $columns Associative array with one or more of `[ 'old_name' => 'new_name' ]`
+	 * @return int Number of columns renamed
+	 * @since 3.0.185
+	 * @throws \PDOException|WireException
+	 * 
+	 */
+	public function renameColumns($table, array $columns) {
+		
+		$qty = 0;
+		
+		if(version_compare($this->getVersion(true), '8.0.0', '>=')) {
+			$mysql8 = $this->getServerType() === 'MySQL';
+		} else {
+			$mysql8 = false;
+		}
+	
+		$table = $this->escapeTable($table);
+		$colTypes = $mysql8 ? array() : $this->getColumns($table, 3);
+		
+		foreach($columns as $oldName => $newName) {
+			$oldName = $this->escapeCol($oldName);
+			$newName = $this->escapeCol($newName);
+			if(empty($oldName) || empty($newName)) continue;
+			if($mysql8) {
+				$sql = "ALTER TABLE `$table` RENAME COLUMN `$oldName` TO `$newName`";
+			} else if(isset($colTypes[$oldName])) {
+				$colType = $colTypes[$oldName];
+				$sql = "ALTER TABLE `$table` CHANGE `$oldName` `$newName` $colType";
+			} else {
+				continue;
+			}
+			if($this->exec($sql)) $qty++;
+		}
+	
+		return $qty;
+	}
+	
+	/**
+	 * Rename a table column without changing type
+	 * 
+	 * #pw-group-schema
+	 * 
+	 * @param string $table
+	 * @param string $oldName
+	 * @param string $newName
+	 * @return bool
+	 * @throws \PDOException|WireException
+	 * @since 3.0.185
+	 * 
+	 */
+	public function renameColumn($table, $oldName, $newName) {
+		$columns = array($oldName => $newName);
+		return $this->renameColumns($table, $columns) > 0;
+	}
+
+	/**
 	 * Is the given string a database comparison operator?
 	 * 
-	 * #pw-group-custom
+	 * #pw-group-info
 	 * 
 	 * ~~~~~
 	 * if($database->isOperator('>=')) {
@@ -1285,6 +1414,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Is given word a fulltext stopword for database engine?
 	 * 
+	 * #pw-group-info
+	 * 
 	 * @param string $word
 	 * @param string $engine DB engine ('myisam' or 'innodb') or omit for current engine
 	 * @return bool
@@ -1300,6 +1431,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 
 	/**
 	 * Get all fulltext stopwords for database engine
+	 * 
+	 * #pw-group-info
 	 * 
 	 * @param string $engine Specify DB engine of "myisam" or "innodb" or omit for current DB engine
 	 * @param bool $flip Return flipped array where stopwords are array keys rather than values? for isset() use (default=false)
@@ -1338,7 +1471,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 *
 	 */
 	public function escapeTable($table) {
-		$table = (string) trim($table); 
+		$table = (string) trim("$table"); 
 		if(ctype_alnum($table)) return $table; 
 		if(ctype_alnum(str_replace('_', '', $table))) return $table;
 		return preg_replace('/[^_a-zA-Z0-9]/', '_', $table);
@@ -1375,6 +1508,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Sanitize comparison operator
 	 * 
+	 * #pw-group-sanitization
+	 * 
 	 * @param string $operator
 	 * @param bool|int|null $operatorType Specify a WireDatabasePDO::operatorType* constant (default=operatorTypeComparison)
 	 * @param string $default Default/fallback operator to return if given one is not valid (default='=')
@@ -1387,7 +1522,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	}
 
 	/**
-	 * Escape a string value, same as $db->quote() but without surrounding quotes
+	 * Escape a string value, same as $database->quote() but without surrounding quotes
 	 * 
 	 * #pw-group-sanitization
 	 *
@@ -1417,7 +1552,6 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * Quote and escape a string value
 	 * 
 	 * #pw-group-sanitization
-	 * #pw-group-PDO
 	 *
 	 * @param string $str
 	 * @return string
@@ -1473,10 +1607,11 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Close the PDO connection
 	 * 
-	 * #pw-group-custom
+	 * #pw-group-connection
 	 * 
 	 */
 	public function closeConnection() {
+		$this->pdoLast = null;
 		$this->reader['pdo'] = null;
 		$this->writer['pdo'] = null;
 		$this->reader['init'] = false;
@@ -1492,12 +1627,12 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * echo $value; // outputs "4"
 	 * ~~~~~
 	 * 
-	 * #pw-group-custom
+	 * #pw-group-info
 	 * 
 	 * @param string $name Name of MySQL variable you want to retrieve
 	 * @param bool $cache Allow use of cached values? (default=true)
 	 * @param bool $sub Allow substitution of MyISAM variable names to InnoDB equivalents when InnoDB is engine? (default=true)
-	 * @return string|int
+	 * @return string|null
 	 * 
 	 */
 	public function getVariable($name, $cache = true, $sub = true) {
@@ -1507,8 +1642,12 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 		$query->bindValue(':name', $name);
 		$query->execute();
 		/** @noinspection PhpUnusedLocalVariableInspection */
-		list($varName, $value) = $query->fetch(\PDO::FETCH_NUM);
-		$this->variableCache[$name] = $value;
+		if($query->rowCount()) {
+			list(,$value) = $query->fetch(\PDO::FETCH_NUM);
+			$this->variableCache[$name] = $value;
+		} else {
+			$value = null;
+		}
 		$query->closeCursor();
 		return $value;
 	}
@@ -1521,18 +1660,49 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 *  - 5.7.23
 	 *  - 10.1.34-MariaDB
 	 * 
+	 * #pw-group-info
+	 * 
 	 * @return string
+	 * @param bool $getNumberOnly Get only version number, exclude any vendor specific suffixes? (default=false) 3.0.185+
 	 * @since 3.0.166
 	 * 
 	 */
-	public function getVersion() {
-		return $this->getVariable('version', true, false); 
+	public function getVersion($getNumberOnly = false) {
+		$version = $this->getVariable('version', true, false); 
+		if($getNumberOnly && preg_match('/^([\d.]+)/', $version, $matches)) $version = $matches[1];
+		return $version;
+	}
+
+	/**
+	 * Get server type, one of MySQL, MariDB, Percona, etc.
+	 * 
+	 * #pw-group-info
+	 * 
+	 * @return string
+	 * @since 3.0.185
+	 * 
+	 */
+	public function getServerType() {
+		$serverType = '';
+		$serverTypes = array('MariaDB', 'Percona', 'OurDelta', 'Drizzle', 'MySQL');
+		foreach(array('version', 'version_comment') as $name) {
+			$value = $this->getVariable($name);
+			if($value === null) continue;
+			foreach($serverTypes as $type) {
+				if(stripos($value, $type) !== false) $serverType = $type;
+				if($serverType) break;
+			}
+			if($serverType) break;
+		}
+		return $serverType ? $serverType : 'MySQL';
 	}
 	
 	/**
 	 * Get the regular expression engine used by database
 	 * 
 	 * Returns one of 'ICU' (MySQL 8.0.4+) or 'HenrySpencer' (earlier versions and MariaDB)
+	 * 
+	 * #pw-group-info
 	 * 
 	 * @return string
 	 * @since 3.0.166
@@ -1550,7 +1720,9 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	}
 
 	/**
-	 * Get current database engine (lowercase) 
+	 * Get current database engine (lowercase)
+	 * 
+	 * #pw-group-schema
 	 * 
 	 * @return string
 	 * @since 3.0.160
@@ -1562,6 +1734,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 
 	/**
 	 * Get current database charset (lowercase)
+	 * 
+	 * #pw-group-schema
 	 * 
 	 * @return string
 	 * @since 3.0.160
@@ -1603,7 +1777,7 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	/**
 	 * Get max length allowed for a fully indexed varchar column in ProcessWire
 	 * 
-	 * #pw-internal
+	 * #pw-group-schema
 	 * 
 	 * @return int
 	 * 
@@ -1623,6 +1797,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 	 * 
 	 * Returns true if reader is configured and allowed
 	 * Returns false if reader is not configured or not allowed
+	 * 
+	 * #pw-internal
 	 * 
 	 * @param bool $allow
 	 * @return bool
@@ -1713,6 +1889,8 @@ class WireDatabasePDO extends Wire implements WireDatabase {
 
 	/**
 	 * Get current date/time ISO-8601 string or UNIX timestamp according to database
+	 * 
+	 * #pw-group-info
 	 * 
 	 * @param bool $getTimestamp Get unix timestamp rather than ISO-8601 string? (default=false)
 	 * @return string|int

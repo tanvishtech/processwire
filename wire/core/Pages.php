@@ -8,19 +8,33 @@
  *
  * This is the most used object in the ProcessWire API. 
  *
- * ProcessWire 3.x, Copyright 2020 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  *
  * @link http://processwire.com/api/variables/pages/ Offical $pages Documentation
  * @link http://processwire.com/api/selectors/ Official Selectors Documentation
  * 
  * #pw-summary Enables loading and manipulation of Page objects, to and from the database. 
+ * #pw-order-groups retrieval,creation,manipulation,advanced,cache,helpers,hooker
  * 
  * PROPERTIES
  * ==========
- * @property bool $cloning Whether or not a clone() operation is currently active #pw-internal
- * @property bool $outputFormatting Current default output formatting mode. #pw-internal
- * @property bool $autojoin Whether or not autojoin is allowed (typically true) #pw-internal
+ * @property-read bool $autojoin Whether or not autojoin is allowed (typically true) #pw-internal
+ * @property-read bool $cloning Whether or not a clone() operation is currently active #pw-internal
+ * @property-read bool $outputFormatting Current default output formatting mode. #pw-internal
+ * @property-read bool $of Current default output formatting mode, alias of outputFormatting property. #pw-internal 3.0.191+
+ * @property-read PagesLoader $loader PagesLoader instance #pw-internal 3.0.191+
+ * @property-read PagesEditor $editor PagesEditor instance #pw-internal 3.0.191+
+ * @property-read PagesNames $names PagesNames instance #pw-internal 3.0.191+
+ * @property-read PagesLoaderCache $cacher PagesLoaderCache instance #pw-internal 3.0.191+
+ * @property-read PagesTrash $trasher PagesTrash instance #pw-internal 3.0.191+
+ * @property-read PagesRaw $raw PagesRaw instance #pw-internal 3.0.191+
+ * @property-read PagesRequest $request PagesRequest instance #pw-internal 3.0.191+
+ * @property-read PagesPathFinder $pathFinder PagesPathFinder instance #pw-internal 3.0.191+
+ * @property-read PagesType[] $types Array of all pages type managers. #pw-internal 3.0.191+
+ * @property-read Page $newPage Returns new Page instance. #pw-internal 3.0.191+
+ * @property-read Page $newPageArray Returns new PageArray instance. #pw-internal 3.0.191+
+ * @property-read Page $newNullPage Returns new NullPage instance. #pw-internal 3.0.191+
  * 
  * HOOKABLE METHODS
  * ================
@@ -153,6 +167,18 @@ class Pages extends Wire {
 	 *
 	 */
 	protected $raw;
+	
+	/**
+	 * @var PagesRequest
+	 *
+	 */
+	protected $request;
+	
+	/**
+	 * @var PagesPathFinder
+	 *
+	 */
+	protected $pathFinder;
 
 	/**
 	 * Array of PagesType managers
@@ -186,7 +212,7 @@ class Pages extends Wire {
 	 *
 	 */
 	public function init() {
-		$this->loader->getById($this->wire('config')->preloadPageIDs);
+		$this->loader->getById($this->wire()->config->preloadPageIDs);
 	}
 
 	/****************************************************************************************************************
@@ -540,15 +566,28 @@ class Pages extends Wire {
 	 * $a = $pages->findRaw("template=blog, options=objects|entities"); 
 	 * ~~~~~
 	 * 
+	 * In 3.0.193 the following additional options were added for the `$field` argument:
+	 * 
+	 *  - Specify `parent.field_name` or `parent.parent.field_name`, etc. to return values from parent(s).
+	 *  - Specify `references` or `references.field_name`, etc. to also return values from pages referencing found pages.
+	 *  - Specify `meta` or `meta.name` to also return values from page meta data.
+	 * 
 	 * #pw-advanced
 	 * #pw-group-retrieval
 	 *
 	 * @param string|array|Selectors|int $selector Page matching selector or page ID
-	 * @param string|array|Field $field Name of field/property to get, or array of them, or omit to get all (default='')
-	 *   Note: this argument may also be specified in the $selector argument as "field=foo" or "field=foo|bar|baz" (3.0.173+).
+	 * @param string|array|Field $field Name of field/property to get, or array of them, CSV string, or omit to get all (default='')
+	 *  - Optionally use associative array to rename fields in returned value, i.e. `['title' => 'label']` returns 'title' as 'label' in return value.
+	 *  - Note: this argument may also be specified in the $selector argument as "field=foo" or "field=foo|bar|baz" (3.0.173+).
 	 * @param array $options Options to adjust behavior (may also be specified in selector, i.e. “objects=1, entities=foo|bar”)
 	 *  - `objects` (bool): Use objects rather than associative arrays? (default=false) 3.0.174+
 	 *  - `entities` (bool|array): Entity encode string values? True or 1 to enable, or specify array of field names. (default=false) 3.0.174+
+	 *  - `nulls` (bool): Populate nulls for field values that are not present, rather than omitting them? (default=false) 3.0.198+
+	 *  - `indexed` (bool): Index by page ID? (default=true)
+	 *  - `flat` (bool|string): Flatten return value as `["field.subfield" => "value"]` rather than `["field" => ["subfield" => "value"]]`?
+	 *     Optionally specify field delimiter for the value, otherwise a period `.` will be used as the delimiter. (default=false) 3.0.193+
+	 *  - Any of these options above can be specified in the $selector argument as a string, i.e. `…, flat=1, entities=1`. 
+	 *  - Note the `objects` and `flat` options are not meant to be used together.
 	 * @return array
 	 * @since 3.0.172
 	 *
@@ -708,7 +747,7 @@ class Pages extends Wire {
 			if($template instanceof Template) {
 				// cool, cool
 			} else if(is_int($template) || is_string($template)) {
-				$template = $this->wire('templates')->get($template);
+				$template = $this->wire()->templates->get($template);
 			} else {
 				$template = null;
 			}
@@ -829,7 +868,9 @@ class Pages extends Wire {
 	/**
 	 * Add a new page using the given template and parent
 	 *
-	 * If no page "name" is specified, one will be automatically assigned. 
+	 * If no page “name” is specified, one will be automatically assigned. 
+	 * 
+	 * For an alternate interface for adding new pages, see the `$pages->new()` method. 
 	 * 
 	 * ~~~~~
 	 * // Add new page using 'skyscraper' template into Atlanta
@@ -847,7 +888,7 @@ class Pages extends Wire {
 	 * ]);
 	 * ~~~~~
 	 * 
-	 * #pw-group-manipulation
+	 * #pw-group-creation
 	 *
 	 * @param string|Template $template Template name or Template object
 	 * @param string|int|Page $parent Parent path, ID or Page object
@@ -856,10 +897,82 @@ class Pages extends Wire {
 	 * @param array $values Field values to assign to page (optional). If $name is omitted, this may also be 3rd param.
 	 * @return Page New page ready to populate. Note that this page has output formatting off.
 	 * @throws WireException When some criteria prevents the page from being saved.
+	 * @see Pages::new(), Pages::newPage()
 	 *
 	 */
 	public function ___add($template, $parent, $name = '', array $values = array()) {
 		return $this->editor()->add($template, $parent, $name, $values);
+	}
+
+	/**
+	 * Create a new Page populated from selector string or array
+	 * 
+	 * This is similar to the `$pages->add()` method but with a simpler 1-argument (selector) interface. 
+	 * This method can also auto-detect some properties that the add() method cannot. 
+	 * 
+	 * To create a new page without saving to the database use the `$pages->newPage()` method instead. 
+	 * It accepts the same arguments as this method. 
+	 * 
+	 * Minimum requirements to create a new page that is saved in database:
+	 * 
+	 * - A `template` must be specified, unless it can be auto-detected from a given `parent`. 
+	 * - A `parent` must be specified, unless it can be auto-detected from a given `template` or `path`.
+	 * 
+	 * Please note the following: 
+	 *
+	 * - If a `path` is specified but not a `name` or `parent` then both will be derived from the `path`. 
+	 * - If a `title` is specified but not a `name` or `path` then the `name` will be derived from the `title`.
+	 * - If given `parent` or `path` only allows one template (via family settings) then `template` becomes optional.
+	 * - If given `template` only allows one parent (via family settings) then `parent` becomes optional. 
+	 * - If given selector string starts with a `/` it is assumed to be the `path` property. 
+	 * - If new page has name that collides with an existing page (i.e. “foo”), new page name will increment (i.e. “foo-1”).
+	 * - If no `name`, `path` or `title` is given (that name can be derived from) then an “untitled-page” name will be used. 
+	 * 
+	 * ~~~~~
+	 * // Creating a page via selector string
+	 * $p = $pages->new("template=category, parent=/categories/, title=New Category");
+	 * 
+	 * // Creating a page via selector using path, which implies parent and name
+	 * $p = $pages->new("template=category, path=/categories/new-category");
+	 * 
+	 * // Creating a page via array
+	 * $p = $pages->new([
+	 *   'template' => 'category',
+	 *   'parent' => '/categories/',
+	 *   'title' => 'New Category'
+	 * ]);
+	 * 
+	 * // Parent and name can be auto-detected when you specify path…
+	 * $p = $pages->new('path=/blog/posts/foo-bar-baz');
+	 * 
+	 * // …and even 'path=' is optional if slash '/' is at beginning
+	 * $p = $pages->new('/blog/posts/foo-bar-baz');
+	 * ~~~~~
+	 * 
+	 * #pw-group-creation
+	 * 
+	 * @param string|array $selector Selector string or array of properties to set
+	 * @return Page
+	 * @since 3.0.191
+	 * @see Pages::add(), Pages::newPage()
+	 * 
+	 */
+	public function ___new($selector = '') {
+	
+		$options = $this->editor()->newPageOptions($selector);
+		$error = 'Cannot save new page without a %s';
+		$template = isset($options['template']) ? $options['template'] : null;
+		$parent = isset($options['parent']) ? $options['parent'] : null;
+		$name = isset($options['name']) ? $options['name'] : '';
+		
+		if(!$template) throw new WireException(sprintf($error, 'template'));
+		if(!$parent) throw new WireException(sprintf($error, 'parent'));
+		
+		unset($options['template'], $options['parent'], $options['name']);
+		
+		$page = $this->editor()->add($template, $parent, $name, $options);
+		
+		return $page;
 	}
 	
 	/**
@@ -885,7 +998,7 @@ class Pages extends Wire {
 	 * $copy->save();
 	 * ~~~~~
 	 * 
-	 * #pw-group-manipulation
+	 * #pw-group-creation
 	 *
 	 * @param Page $page Page that you want to clone
 	 * @param Page|null $parent New parent, if different (default=null, which implies same parent)
@@ -1065,7 +1178,7 @@ class Pages extends Wire {
 	 * 
 	 * #pw-internal
 	 *
-	 * @param array|WireArray|string $_ids Array of Page IDs or CSV string of Page IDs.
+	 * @param array|WireArray|string|int $_ids Array of Page IDs, CSV string of Page IDs, or single page ID. 
 	 * @param Template|array|null $template Specify a template to make the load faster, because it won't have to attempt to join all possible fields... just those used by the template. 
 	 *	Optionally specify an $options array instead, see the method notes above. 
 	 * @param int|null $parent_id Specify a parent to make the load faster, as it reduces the possibility for full table scans. 
@@ -1077,6 +1190,24 @@ class Pages extends Wire {
 	public function getById($_ids, $template = null, $parent_id = null) {
 		return $this->loader->getById($_ids, $template, $parent_id);
 	}
+
+	/**
+	 * Get one page by ID
+	 * 
+	 * This is the same as `getById()` with the `getOne` option. 
+	 * 
+	 * #pw-internal
+	 * 
+	 * @param int $id
+	 * @param array $options
+	 * @return Page|NullPage
+	 * @since 3.0.186
+	 * 
+	 */
+	public function getOneById($id, array $options = array()) {
+		$options['getOne'] = true;
+		return $this->loader->getById((int) $id, $options);
+	}	
 	
 	/**
 	 * Given an ID, return a path to a page, without loading the actual page
@@ -1094,7 +1225,7 @@ class Pages extends Wire {
 	 * echo "Path for page 1234 is: $path";
 	 * ~~~~~
 	 * 
-	 * #pw-advanced
+	 * #pw-group-advanced
 	 *
 	 * @param int|Page $id ID of the page you want the path to
 	 * @param null|array|Language|int|string $options Specify $options array or Language object, id or name. Allowed options include: 
@@ -1167,6 +1298,91 @@ class Pages extends Wire {
 	 */
 	public function getByPath($path, $options = array()) {
 		return $this->loader->getByPath($path, $options);
+	}
+
+	/**
+	 * Get verbose array of info about a given page path
+	 * 
+	 * This method accepts a page path (not URL) with optional language segment
+	 * prefix, additional URL segments and/or pagination number. It translates
+	 * the given path to information about what page it matches, what type of 
+	 * request it would result in.
+	 *
+	 * If the `response` property in the return value is 301 or 302, then the
+	 * `redirect` property will be populated with a recommend redirect path. 
+	 * 
+	 * If given a `$path` argument of `/en/foo/bar/page3` on a site that has default
+	 * language homepage segment of `en`, a page living at `/foo/` that accepts 
+	 * URL segment `bar` and has pagination enabled, it will return the following:
+	 * ~~~~~
+	 * [
+	 *   'request' => '/en/foo/bar/page3', 
+	 *   'response' => 200, // one of 200, 301, 302, 404, 414
+	 *   'type' => 'ok', // response type name
+	 *   'errors' => [], // array of error messages indexed by error name
+	 *   'redirect' => '/redirect/path/', // suggested path to redirect to or blank
+	 *   'page' => [
+	 *      'id' => 123, // ID of the page that was found
+	 *      'parent_id' => 456,
+	 *      'templates_id' => 12,
+	 *      'status' => 1, 
+	 *      'name' => 'foo',
+	 *   ],
+	 *   'language' => [
+	 *      'name' => 'default', // name of language detected
+	 *      'segment' => 'en', // segment prefix in path (if any)
+	 *      'status' => 1, // language status where 1 is on, 0 is off
+	 *    ],
+	 *   'parts' => [ // all the parts of the path identified
+	 *     [
+	 *       'type' => 'language', 
+	 *       'value' => 'en',
+	 *       'language' => 'default' 
+	 *     ],
+	 *     [
+	 *       'type' => 'pageName',
+	 *       'value' => 'foo',
+	 *       'language' => 'default'
+	 *     ],
+	 *     [
+	 *       'type' => 'urlSegment',
+	 *       'value' => 'bar',
+	 *       'language' => ''
+	 *     ],
+	 *     [
+	 *       'type' => 'pageNum',
+	 *       'value' => 'page3',
+	 *       'language' => 'default'
+	 *     ],
+	 *   ],
+	 *   'urlSegments' => [ // URL segments identified in order
+	 *      'bar',
+	 *   ],
+	 *   'urlSegmentStr' => 'bar', // URL segment string
+	 *   'pageNum' => 3, // requested pagination number
+	 *   'pageNumPrefix' => 'page', // prefix used in pagination number
+	 *   'scheme' => 'https', // blank if no scheme required, https or http if one of those is required
+	 *   'method' => 'pagesRow', // method(s) that were used to find the page
+	 * ]
+	 * ~~~~~
+	 * 
+	 * #pw-group-retrieval
+	 * 
+	 * @param string $path Page path optionally including URL segments, language prefix, pagination number
+	 * @param array $options
+	 *  - `useLanguages` (bool): Allow use of multi-language page names? (default=true)
+	 *     Requires LanguageSupportPageNames module installed.
+	 *  - `useShortcuts` (bool): Allow use of shortcut methods for optimization? (default=true)
+	 *     Recommend PagePaths module installed.
+	 *  - `useHistory` (bool): Allow use historical path names? (default=true)
+	 *     Requires PagePathHistory module installed.
+	 *  - `verbose` (bool): Return verbose array of information? (default=true)
+	 *     If false, some optional information will be omitted in return value. 
+	 * @return array
+	 * 
+	 */
+	public function getInfoByPath($path, array $options = array()) {
+		return $this->pathFinder()->get($path, $options);
 	}
 	
 	/**
@@ -1357,7 +1573,7 @@ class Pages extends Wire {
 	 *
 	 * You may also pass in the string "id=123", where 123 is the page_id
 	 * 
-	 * #pw-internal
+	 * #pw-group-cache
 	 *
 	 * @param int|string|null $id 
 	 * @return Page|array|null
@@ -1383,10 +1599,10 @@ class Pages extends Wire {
 	/**
 	 * Remove the given page(s) from the cache, or uncache all by omitting $page argument
 	 *
-	 * When no $page argument is given, this method behaves the same as $pages->uncacheAll().
+	 * When no $page argument is given, this method behaves the same as `$pages->uncacheAll()`.
 	 * When any $page argument is given, this does not remove pages from selectorCache.
 	 * 
-	 * #pw-internal
+	 * #pw-group-cache
 	 *
 	 * @param Page|PageArray|int|null $page Page to uncache, PageArray of pages to uncache, ID of page to uncache (3.0.153+), or omit to uncache all.
 	 * @param array $options Additional options to modify behavior: 
@@ -1435,7 +1651,7 @@ class Pages extends Wire {
 	 * echo "Total value of all products: $" . number_format($total);
 	 * ~~~~~
 	 * 
-	 * #pw-advanced
+	 * #pw-group-cache
 	 * 
 	 * @param Page $page Optional Page that initiated the uncacheAll
 	 * @param array $options Options to modify default behavior: 
@@ -1472,9 +1688,26 @@ class Pages extends Wire {
 	 *
 	 */
 	public function __get($key) {
-		if($key == 'outputFormatting') return $this->loader->getOutputFormatting(); 
-		if($key == 'cloning') return $this->editor()->isCloning(); 
-		if($key == 'autojoin') return $this->loader->getAutojoin();
+		switch($key) {
+			// A-Z
+			case 'autojoin': return $this->loader->getAutojoin();
+			case 'cacher': return $this->cacher();
+			case 'cloning': return $this->editor()->isCloning();
+			case 'editor': return $this->editor();
+			case 'loader': return $this->loader();
+			case 'names': return $this->names();
+			case 'newNullPage': return $this->newNullPage();
+			case 'newPage': return $this->newPage();
+			case 'newPageArray': return $this->newPageArray();
+			case 'of': return $this->of();
+			case 'outputFormatting': return $this->loader->getOutputFormatting();
+			case 'parents': return $this->parents();
+			case 'pathFinder': return $this->pathFinder();
+			case 'raw': return $this->raw();
+			case 'request': return $this->request();
+			case 'trasher': return $this->trasher();
+			case 'types': return $this->types();
+		}
 		return parent::__get($key); 
 	}
 
@@ -1545,7 +1778,7 @@ class Pages extends Wire {
 			'action' => (string) $action, 
 			'details' => (string) $details, 
 			'result' => (string) $result
-			);
+		);
 	}
 
 	/**
@@ -1560,7 +1793,7 @@ class Pages extends Wire {
 	 *
 	 */
 	public function getDebugLog($action = '') {
-		if(!$this->wire('config')->debug) return array();
+		if(!$this->wire()->config->debug) return array();
 		if(!$action) return $this->debugLog; 
 		$debugLog = array();
 		foreach($this->debugLog as $item) if($item['action'] == $action) $debugLog[] = $item; 
@@ -1568,7 +1801,7 @@ class Pages extends Wire {
 	}
 
 	/**
-	 * Return a PageFinder object, ready to use
+	 * Return a new PageFinder object, ready to use
 	 * 
 	 * #pw-internal
 	 *
@@ -1601,6 +1834,7 @@ class Pages extends Wire {
 	 * 
 	 * @param array $options Optionally specify ONE of the following: 
 	 *  - `pageArrayClass` (string): Name of PageArray class to use (if not “PageArray”).
+	 *  - `class` (string): Alias of pageArrayClass supported in 3.0.191+.
 	 *  - `pageArray` (PageArray): Wire and return this given PageArray, rather than instantiating a new one. 
 	 * @return PageArray
 	 * 
@@ -1611,7 +1845,11 @@ class Pages extends Wire {
 			return $options['pageArray'];
 		}
 		$class = 'PageArray';
-		if(!empty($options['pageArrayClass'])) $class = $options['pageArrayClass'];
+		if(!empty($options['pageArrayClass'])) {
+			$class = $options['pageArrayClass'];
+		} else if(!empty($options['class'])) {
+			$class = $options['class'];
+		}
 		$class = wireClassName($class, true);
 		$pageArray = $this->wire(new $class());
 		if(!$pageArray instanceof PageArray) $pageArray = $this->wire(new PageArray());
@@ -1619,54 +1857,70 @@ class Pages extends Wire {
 	}
 
 	/**
-	 * Return a new/blank Page object (in memory only)
+	 * Return a new Page object without saving it to the database
 	 * 
-	 * #pw-internal
+	 * To create a new Page object and save it the database, use the `$pages->new()` or `$pages->add()` methods, 
+	 * or call `save()` on the Page object returned from this method. 
 	 *
-	 * @param array|string|Template $options Optionally specify array of any of the following:
-	 *  - `template` (Template|id|string): Template to use via object, ID or name. 
-	 *  - `pageClass` (string): Class to use for Page. If not specified, default is from template setting, or 'Page' if no template.
-	 *  - Any other Page properties or fields you want to set (parent, name, title, etc.). Note that most page fields will need to
+	 *  - When a template is specified, the `pageClass` can be auto-detected from the template. 
+	 *  - In 3.0.152+ you may specify the Template object, name or ID instead of an $options array.
+	 *  - In 3.0.191+ you may specify a selector string for the $options argument (alternative to array),
+	 *    see the `$pages->new()` method `$selector` argument for details. 
+	 *  - In 3.0.191+ the `pageClass` can also be specified as `class`, assuming that doesn’t collide 
+	 *    with an existing field name. 
+	 * 
+	 * ~~~~~
+	 * // Create a new blank Page object
+	 * $p = $pages->newPage();
+	 * 
+	 * // Create a new Page object and specify properties to set with an array 
+	 * $p = $pages->newPage([
+	 *   'template' => 'blog-post',
+	 *   'parent' => '/blog/posts/',
+	 *   'title' => 'Hello world', 
+	 * ]);
+	 * 
+	 * // Same as above but using selector string (3.0.191+)
+	 * $p = $pages->newPage('template=blog-post, parent=/blog/posts, title=Hello world'); 
+	 * 
+	 * // Create new Page object using 'blog-post' template
+	 * $p = $pages->newPage('blog-post'); 
+	 * 
+	 * // Create new Page object with parent and name implied by given path (3.0.191+)
+	 * $p = $pages->newPage('/blog/posts/hello-world'); 
+	 * ~~~~~
+	 * 
+	 * #pw-group-creation
+	 * 
+	 * @param array|string|Template $options Optionally specify array (or selector string in 3.0.191+) with any of the following:
+	 *  - `template` (Template|id|string): Template to use via object, ID or name. The `pageClass` will be auto-detected. 
+	 *  - `parent` (Page|int|string): Parent page object, ID or path. 
+	 *  - `name` (string): Name of page. 
+	 *  - `path` (string): Specify /path/for/page/, name and parent (and maybe template) can be auto-detected. 3.0.191+
+	 *  - `pageClass` (string): Class to use for Page. If not specified, default is from template setting, or `Page` if no template.
+	 *  - Specify any other Page properties or fields you want to set (name, title, etc.). Note that most page fields will need to
 	 *    have a `template` set first, so make sure to include it in your options array when providing other fields.
-	 *  - In PW 3.0.152+ you may specify the Template object, name or ID instead of an $options array. 
 	 * @return Page
 	 *
 	 */
 	public function newPage($options = array()) {
-		if(!is_array($options)) {
-			if(is_object($options) && $options instanceof Template) {
-				$options = array('template' => $options); 
-			} else if($options && (is_string($options) || is_int($options))) {
-				$options = array('template' => $options); 
-			} else {
-				$options = array();
-			}
-		}
-		if(!empty($options['pageClass'])) {
-			$class = $options['pageClass'];
-		} else {
-			$class = 'Page';
-		}
-		if(!empty($options['template'])) {
-			$template = $options['template'];
-			if(!is_object($template)) {
-				$template = empty($template) ? null : $this->wire('templates')->get($template);
-			}
-			if($template && empty($options['pageClass'])) {
-				$class = $template->getPageClass();
-			}
-		} else {
-			$template = null;
-		}
 		
+		if(empty($options)) return $this->wire(new Page());
+
+		$options = $this->editor()->newPageOptions($options);
+		$template = isset($options['template']) ? $options['template'] : null;
+		$parent = isset($options['parent']) ? $options['parent'] : null;
+		$class = empty($options['pageClass']) ? 'Page' : $options['pageClass'];
+
+		unset($options['template'], $options['parent'], $options['pageClass']); 
+	
 		if(strpos($class, "\\") === false) $class = wireClassName($class, true);
-		$page = $this->wire(new $class($template));
-		if(!$page instanceof Page) $page = $this->wire(new Page($template));
 		
-		unset($options['pageClass'], $options['template']); 
-		foreach($options as $name => $value) {
-			$page->set($name, $value);
-		}
+		$page = $this->wire(new $class($template));
+		
+		if(!$page instanceof Page) $page = $this->wire(new Page($template));
+		if($parent) $page->parent = $parent;
+		if(count($options)) $page->setArray($options);
 		
 		return $page;
 	}
@@ -1699,7 +1953,7 @@ class Pages extends Wire {
 	 *
 	 */
 	public function executeQuery(\PDOStatement $query, $throw = true, $maxTries = 3) {
-		return $this->wire('database')->execute($query, $throw, $maxTries);
+		return $this->wire()->database->execute($query, $throw, $maxTries);
 	}
 
 	/**
@@ -1714,11 +1968,26 @@ class Pages extends Wire {
 	 *
 	 */
 	public function __invoke($key) {
-		if(empty($key)) return $this; // no argument
-		if(is_int($key)) return $this->get($key); // page ID
-		if(is_array($key) && ctype_digit(implode('', $key))) return $this->getById($key); // array of page IDs
-		if(is_string($key) && strpos($key, '/') !== false && $this->sanitizer->pagePathName($key) === $key) return $this->get($key); // page path
-		return $this->find($key); // selector string or array
+		// no argument
+		if(empty($key)) return $this;
+		
+		// page ID
+		if(is_int($key)) return $this->get($key);
+		
+		// array of page IDs
+		if(is_array($key) && ctype_digit(implode('', $key))) {
+			return $this->getById($key);
+		}
+		
+		// page path
+		if(is_string($key) && strpos($key, '/') !== false) { 
+			if($this->wire()->sanitizer->pagePathName($key) === $key) {
+				return $this->get($key);
+			}
+		}
+		
+		// selector string or array
+		return $this->find($key);
 	}
 
 	/**
@@ -1732,8 +2001,8 @@ class Pages extends Wire {
 	 * 
 	 */
 	public function log($str, Page $page) {
-		if(!in_array('pages', $this->wire('config')->logs)) return parent::___log();
-		if($this->wire('process') != 'ProcessPageEdit') $str .= " [From URL: " . $this->wire('input')->url() . "]";
+		if(!in_array('pages', $this->wire()->config->logs)) return parent::___log();
+		if($this->wire()->process != 'ProcessPageEdit') $str .= " [From URL: " . $this->wire()->input->url() . "]";
 		$options = array('name' => 'pages', 'url' => $page->path); 
 		return parent::___log($str, $options); 
 	}
@@ -1764,7 +2033,7 @@ class Pages extends Wire {
 	 * 
 	 * @return PagesNames
 	 *
-	 * #pw-advanced
+	 * #pw-group-helpers
 	 *
 	 */
 	public function names() {
@@ -1805,15 +2074,45 @@ class Pages extends Wire {
 	}
 
 	/**
+	 * Get the PagesRaw instance
+	 * 
+	 * #pw-group-helpers
+	 * 
 	 * @return PagesRaw
 	 * @since 3.0.172
-	 *
-	 * #pw-internal
 	 *
 	 */
 	public function raw() {
 		if(!$this->raw) $this->raw = $this->wire(new PagesRaw($this));
 		return $this->raw;
+	}
+	
+	/**
+	 * Get the PagesRequest instance
+	 * 
+	 * #pw-group-helpers
+	 * 
+	 * @return PagesRequest
+	 * @since 3.0.186
+	 *
+	 */
+	public function request() {
+		if(!$this->request) $this->request = $this->wire(new PagesRequest($this));
+		return $this->request;
+	}
+
+	/**
+	 * Get the PagesPathFinder instance
+	 * 
+	 * #pw-group-helpers
+	 * 
+	 * @return PagesPathFinder
+	 * @since 3.0.186
+	 *
+	 */
+	public function pathFinder() {
+		if(!$this->pathFinder) $this->pathFinder = $this->wire(new PagesPathFinder($this));
+		return $this->pathFinder;
 	}
 
 	/**
@@ -1868,15 +2167,14 @@ class Pages extends Wire {
 	 * @param Page $page The page that was saved
 	 * @param array $changes Array of field names that changed
 	 * @param array $values Array of values that changed, if values were being recorded, see Wire::getChanges(true) for details.
+	 * @see Pages::savedPageOrField(), Pages::savedField()
 	 *
 	 */
 	public function ___saved(Page $page, array $changes = array(), $values = array()) { 
 		$str = "Saved page";
 		if(count($changes)) $str .= " (Changes: " . implode(', ', $changes) . ")";
 		$this->log($str, $page);
-		/** @var WireCache $cache */
-		$cache = $this->wire('cache');
-		$cache->maintenance($page);
+		$this->wire()->cache->maintenance($page);
 		foreach($this->types as $manager) {
 			if($manager->hasValidTemplate($page)) $manager->saved($page, $changes, $values);
 		}
@@ -1938,6 +2236,8 @@ class Pages extends Wire {
 	/**
 	 * Hook called when a Page is about to be trashed
 	 * 
+	 * #pw-hooker
+	 * 
 	 * @param Page $page
 	 * @since 3.0.163
 	 * 
@@ -1981,6 +2281,7 @@ class Pages extends Wire {
 	 *
 	 * @param Page $page The page about to be saved
 	 * @return array Optional extra data to add to pages save query, which the hook can populate. 
+	 * @see Pages::savePageOrFieldReady(), Pages::saveFieldReady()
 	 *
 	 */
 	public function ___saveReady(Page $page) {
@@ -2024,9 +2325,7 @@ class Pages extends Wire {
 	public function ___deleted(Page $page, array $options = array()) { 
 		if($options) {}
 		if(empty($options['_deleteBranch'])) $this->log("Deleted page", $page); 
-		/** @var WireCache $cache */
-		$cache = $this->wire('cache');
-		$cache->maintenance($page);
+		$this->wire()->cache->maintenance($page);
 		foreach($this->types as $manager) {
 			if($manager->hasValidTemplate($page)) $manager->deleted($page);
 		}
@@ -2143,8 +2442,10 @@ class Pages extends Wire {
 		$status = $page->status; 
 		$statusPrevious = $page->statusPrevious; 
 		$isPublished = !$page->isUnpublished();
+		$isInserted = $page->_inserted > 0;
 		$wasPublished = !($statusPrevious & Page::statusUnpublished);
-		if($isPublished && !$wasPublished) $this->published($page);
+		
+		if($isPublished && (!$wasPublished || $isInserted)) $this->published($page);
 		if(!$isPublished && $wasPublished) $this->unpublished($page);
 	
 		$from = array();
@@ -2251,6 +2552,7 @@ class Pages extends Wire {
 	 * 
 	 * @param Page $page
 	 * @param Field $field
+	 * @see Pages::savePageOrFieldReady()
 	 * 
 	 */
 	public function ___saveFieldReady(Page $page, Field $field) { }
@@ -2262,6 +2564,7 @@ class Pages extends Wire {
 	 * 
 	 * @param Page $page
 	 * @param Field $field
+	 * @see Pages::savedPageOrField()
 	 * 
 	 */
 	public function ___savedField(Page $page, Field $field) { 
@@ -2275,6 +2578,7 @@ class Pages extends Wire {
 	 *
 	 * @param Page $page
 	 * @param string $fieldName Populated only if call originates from saveField
+	 * @see Pages::saveReady(), Pages::saveFieldReady()
 	 *
 	 */
 	public function ___savePageOrFieldReady(Page $page, $fieldName = '') { }
@@ -2286,6 +2590,7 @@ class Pages extends Wire {
 	 *
 	 * @param Page $page
 	 * @param array $changes Names of fields
+	 * @see Pages::saved(), Pages::savedField()
 	 *
 	 */
 	public function ___savedPageOrField(Page $page, array $changes = array()) { }

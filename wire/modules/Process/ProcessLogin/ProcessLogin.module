@@ -537,6 +537,7 @@ class ProcessLogin extends Process implements ConfigurableModule {
 	public function ___login($name, $pass) {
 		
 		$session = $this->wire()->session;
+		$input = $this->wire()->input;
 		
 		if($name && $pass) {
 			$loginUser = $session->login($name, $pass);
@@ -546,7 +547,8 @@ class ProcessLogin extends Process implements ConfigurableModule {
 		
 		if($loginUser && $loginUser->id) {
 			$this->loginSuccess($loginUser); 
-			$this->afterLoginRedirect('./'); 
+			$url = $input->urlSegment1 === 'navJSON' ? '../' : './';
+			$this->afterLoginRedirect($url); 
 			
 		} else {
 			$this->loginFailed($this->submitLoginName ? $this->submitLoginName : $name); 
@@ -865,6 +867,7 @@ class ProcessLogin extends Process implements ConfigurableModule {
 		$session->removeFor($this, 'afterLoginPageId');
 		$session->removeFor('ProcessPageView', 'loginRequestPageID');
 		$session->removeFor('ProcessPageView', 'loginRequestURL');
+		if(strpos($url, '/navJSON') !== false) $url = str_replace(array('/navJSON/', '/navJSON'), '/', $url);
 		$session->redirect($url, false);
 	}
 
@@ -1003,23 +1006,43 @@ class ProcessLogin extends Process implements ConfigurableModule {
 	
 		/** @var Modules $modules */
 		$modules = $this->wire('modules');
-	
+
 		/** @var InputfieldRadios $f */
 		$f = $modules->get('InputfieldRadios'); 
+		
+		$emailAllow = true;
+		$emailField = $this->fields->get($this->emailField); /** @var Field $field */
+		$emailAttrs = array();
+		$emailLabel = $this->_('Email address');
+		$emailNotes = array();
+		
+		if($emailField && ((int) $this->allowEmail) !== 1) {
+			if(!$emailField->hasFlag(Field::flagUnique)) {
+				$emailAllow = false;
+				$emailNotes[] = sprintf(
+					$this->_('You must [enable the “unique” setting](%s) for your email field'),
+					$emailField->editUrl('flagUnique')
+				);
+			}
+			$role = $this->wire()->roles->get($this->wire()->config->superUserRolePageID);
+			if($this->wire()->users->count("roles=$role, email=''") > 0) {
+				$emailAllow = false;
+				$emailNotes[] = $this->_('All superusers must have an email address defined');
+			}
+			if(!$emailAllow) {
+				$emailAttrs['disabled'] = 'disabled';
+				$emailLabel .= ' - ' . $this->_('See notes below to enable');
+			}
+		}
+		
 		$f->attr('name', 'allowEmail'); 
 		$f->label = $this->_('Login type'); 
 		$f->addOption(0, $this->_('User name'));
-		$f->addOption(1, $this->_('Email address'));
-		$f->addOption(2, $this->_('Either'));
+		$f->addOption(1, $emailLabel, $emailAttrs);
+		$f->addOption(2, $this->_('Either'), $emailAttrs);
 		$f->icon = 'sign-in';
 		$f->val((int) $this->allowEmail);
-		$emailField = $this->fields->get($this->emailField); /** @var Field $field */
-		if($emailField && !$emailField->hasFlag(Field::flagUnique)) {
-			$f->notes = sprintf(
-				$this->_('To use email login, you must [enable the “unique” setting](%s) for your email field.'),
-				$emailField->editUrl('flagUnique')
-			);
-		}
+		if(count($emailNotes)) $f->notes = $this->_('To use login-by-email: ') . implode(', ', $emailNotes);
 		$inputfields->add($f);
 		$inputfields->add($this->getTfaConfigInputfields());
 	}

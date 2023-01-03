@@ -958,18 +958,20 @@ class InputfieldFile extends Inputfield implements InputfieldItemList, Inputfiel
 	
 		// rename (currently only used by InputfieldImage)
 		$key = "rename_$id";
-		$rename = $input->$key;
+		$rename = (string) $input->$key;
 		if(strlen($rename) && $rename != $pagefile->basename(false)) {
 			$name = $pagefile->basename();
 			$rename .= "." . $pagefile->ext();
 			// cleanBasename($basename, $originalize = false, $allowDots = true, $translate = false) 
 			$rename = $pagefile->pagefiles->cleanBasename($rename, true, true, true);
-			$message = sprintf($this->_('Renamed file "%1$s" to "%2$s"'), $name, $rename);
-			if($pagefile->rename($rename) !== false) {
-				$this->message($message);
-				$changed = true; 
-			} else {
-				$this->warning($this->_('Failed') . " - $message"); 
+			if(strlen($rename)) {
+				$message = sprintf($this->_('Renamed file "%1$s" to "%2$s"'), $name, $rename);
+				if($pagefile->rename($rename) !== false) {
+					$this->message($message);
+					$changed = true;
+				} else {
+					$this->warning($this->_('Failed') . " - $message");
+				}
 			}
 		}
 	
@@ -1025,7 +1027,8 @@ class InputfieldFile extends Inputfield implements InputfieldItemList, Inputfiel
 			if($inputfields && $this->processItemInputfields($pagefile, $inputfields, $id, $input)) $changed = true;
 		}
 
-		if(isset($input['delete_' . $id])) {
+		$delete = isset($input['delete_' . $id]) ? (int) $input['delete_' . $id] : 0;
+		if(!empty($delete)) {
 			$this->processInputDeleteFile($pagefile); 
 			$changed = true; 
 			
@@ -1408,7 +1411,7 @@ class InputfieldFile extends Inputfield implements InputfieldItemList, Inputfiel
 	 */
 	public function ___getConfigInputfields() {
 		$inputfields = parent::___getConfigInputfields();
-		require_once(__DIR__ . '/config.php');
+		require_once($this->wire()->config->paths('InputfieldFile') . 'config.php');
 		$configuration = new InputfieldFileConfiguration();
 		$this->wire($configuration);
 		$configuration->getConfigInputfields($this, $inputfields);

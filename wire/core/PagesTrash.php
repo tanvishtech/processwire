@@ -75,11 +75,11 @@ class PagesTrash extends Wire {
 			$page->name = ($name . "_" . $page->name);
 		
 			// do the same for other languages, if present
-			$languages = $this->wire('languages');
-			if($languages && $this->wire('modules')->isInstalled('LanguageSupportPageNames')) {
+			$languages = $this->wire()->languages;
+			if($languages && $languages->hasPageNames()) {
 				foreach($languages as $language) {
 					if($language->isDefault()) continue;
-					$langName = $page->get("name$language->id");
+					$langName = (string) $page->get("name$language->id");
 					if(!strlen($langName)) continue; 
 					$page->set("name$language->id", $name . "_" . $langName);
 				}
@@ -153,9 +153,8 @@ class PagesTrash extends Wire {
 			'namePrevious' => '',
 		);
 		
-		/** @var Languages|array $languages */
-		$languages = $this->wire('languages');
-		if(!$languages || !$this->wire('modules')->isInstalled('LanguageSupportPageNames')) $languages = array();
+		$languages = $this->wire()->languages;
+		if(!$languages || !$languages->hasPageNames()) $languages = array();
 		
 		// initialize name properties in $info for each language 
 		foreach($languages as $language) {
@@ -228,7 +227,7 @@ class PagesTrash extends Wire {
 		foreach($languages as $language) {
 			/** @var Language $language */
 			if($language->isDefault()) continue;
-			$langName = $page->get("name$language->id");
+			$langName = (string) $page->get("name$language->id");
 			if(!strlen($langName)) continue;
 			if(strpos($langName, $trashPrefix) === 0) {
 				list(,$langName) = explode('_', $langName);

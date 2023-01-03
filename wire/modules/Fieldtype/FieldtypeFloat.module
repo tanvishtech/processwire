@@ -8,7 +8,7 @@
  * For documentation about the fields used in this class, please see:  
  * /wire/core/Fieldtype.php
  * 
- * ProcessWire 3.x, Copyright 2020 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  *
  */
@@ -19,7 +19,7 @@ class FieldtypeFloat extends Fieldtype {
 		return array(
 			'title' => __('Float', __FILE__),
 			'summary' => __('Field that stores a floating point number', __FILE__),
-			'version' => 106,
+			'version' => 107,
 			'permanent' => true, 
 		);
 	}
@@ -86,7 +86,7 @@ class FieldtypeFloat extends Fieldtype {
 			$value = $this->wire()->sanitizer->float((string) $value, array('blankValue' => ''));
 		}
 		$precision = $field->get('precision');
-		if($precision === null || $precision === '') {
+		if($precision === null || $precision === '' || $precision < 0) {
 			$value = (float) $value;
 		} else {
 			$value = round((float) $value, $precision);
@@ -121,23 +121,47 @@ class FieldtypeFloat extends Fieldtype {
 	 */
 	public function ___sleepValue(Page $page, Field $field, $value) {
 		$precision = $field->get('precision'); 
-		if(is_null($precision) || $precision === '') $precision = self::getPrecision($value); 
-		if(!is_string($value)) $value = number_format($value, $precision, '.', '');
-		return $value; 
+		if(is_null($precision) || $precision === '' || $precision < 0) {
+			$precision = self::getPrecision($value);
+		}
+		if(!is_string($value)) {
+			$value = number_format($value, $precision, '.', '');
+		}
+		return $value;
 	}
 
 	/**
 	 * Get precision of given value 
 	 * 
 	 * @param string|float $value
+	 * @param int $min minimum precision to return
 	 * @return int
 	 * 
 	 */
-	public static function getPrecision($value) {
+	public static function getPrecision($value, $min = 1) {
 		$value = (float) $value;
-		$remainder = ceil($value) - $value;
-		$precision = strlen(ltrim($remainder, '0., '));
-		if(!$precision) $precision = 1; 
+		if(stripos("$value", 'E-')) {
+			// negative exponent
+			list($v, $precision) = explode('E-', strtoupper("$value"), 2);
+			$precision = (int) $precision;
+			if(strpos($v, '.') !== false) $precision += strlen(strstr($v, '.'))-1;
+		} else if(stripos("$value", 'E')) {
+			// positive exponent
+			list($v, $precision) = explode('E', strtoupper("$value"), 2);
+			$precision = (int) ltrim($precision, '+');
+			if(strpos($v, '.') !== false) $precision = (strlen(strstr($v, '.')) - 1) - $precision;
+		} else if(strpos("$value", '.') === false) {
+			$precision = 0;
+		} else {
+			// decimal
+			/*
+			$remainder = ceil($value) - $value;
+			$precision = strlen(ltrim("$remainder", '0., '));
+			*/
+			list(, $v) = explode('.', "$value");
+			$precision = strlen(rtrim($v, '0'));
+		}
+		if($precision < $min) $precision = $min; 
 		return $precision;
 	}
 
@@ -170,6 +194,7 @@ class FieldtypeFloat extends Fieldtype {
 		$f = $this->wire()->modules->get('InputfieldInteger');
 		$f->attr('name', 'precision'); 
 		$f->label = $this->_('Number of decimal digits to round to');
+		$f->description = $this->_('Or use a negative number like `-1` to disable rounding.');
 		if($precision !== '') $f->val($precision); 
 		$f->attr('size', 8); 
 		$inputfields->append($f);

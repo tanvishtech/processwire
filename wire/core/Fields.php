@@ -5,7 +5,7 @@
  *
  * Manages collection of ALL Field instances, not specific to any particular Fieldgroup
  * 
- * ProcessWire 3.x, Copyright 2018 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  * 
  * #pw-summary Manages all custom fields in ProcessWire, independently of any Fieldgroup. 
@@ -34,6 +34,8 @@ class Fields extends WireSaveableItems {
 
 	/**
 	 * Instance of FieldsArray
+	 * 
+	 * @var FieldsArray
 	 *
 	 */
 	protected $fieldsArray = null;
@@ -96,6 +98,12 @@ class Fields extends WireSaveableItems {
 		'_custom',
 	);
 
+	/**
+	 * Flag names in format [ flagInt => 'flagName' ]
+	 * 
+	 * @var array
+	 * 
+	 */
 	protected $flagNames = array();
 
 	/**
@@ -120,12 +128,18 @@ class Fields extends WireSaveableItems {
 	 */
 	protected $tableTools = null;
 
+	/** 
+	 * @var Fieldtypes|null  
+	 * 
+	 */
+	protected $fieldtypes = null;
+
 	/**
 	 * Construct
 	 *
 	 */
 	public function __construct() {
-		$this->fieldsArray = new FieldsArray();
+		parent::__construct();
 		$this->flagNames = array(
 			Field::flagAutojoin => 'autojoin',
 			Field::flagGlobal => 'global',
@@ -138,7 +152,9 @@ class Fields extends WireSaveableItems {
 			Field::flagSystemOverride => 'system-override',
 		);
 		// convert so that keys are names so that isset() can be used rather than in_array()
-		if(isset(self::$nativeNamesSystem[0])) self::$nativeNamesSystem = array_flip(self::$nativeNamesSystem);
+		if(isset(self::$nativeNamesSystem[0])) {
+			self::$nativeNamesSystem = array_flip(self::$nativeNamesSystem);
+		}
 	}
 
 	/**
@@ -148,14 +164,15 @@ class Fields extends WireSaveableItems {
 	 *
 	 */
 	public function init() {
-		$this->wire($this->fieldsArray);
-		$this->load($this->fieldsArray); 
+		$this->getWireArray();
 	}
 
 	/**
 	 * Per WireSaveableItems interface, return a blank instance of a Field
 	 * 
 	 * #pw-internal
+	 * 
+	 * @return Field
 	 *
 	 */
 	public function makeBlankItem() {
@@ -174,32 +191,66 @@ class Fields extends WireSaveableItems {
 	public function makeItem(array $a = array()) {
 		
 		if(empty($a['type'])) return parent::makeItem($a);
-		
-		/** @var Fieldtypes $fieldtypes */
-		$fieldtypes = $this->wire('fieldtypes');
-		if(!$fieldtypes) return parent::makeItem($a);
+		if($this->fieldtypes === null) $this->fieldtypes = $this->wire()->fieldtypes;
+		if(!$this->fieldtypes) return parent::makeItem($a);
 		
 		/** @var Fieldtype $fieldtype */
-		$fieldtype = $fieldtypes->get($a['type']);
-		if(!$fieldtype) return parent::makeItem($a);
+		$fieldtype = $this->fieldtypes->get($a['type']);
+		if(!$fieldtype) {
+			if($this->useLazy) {
+				$this->error("Fieldtype module '$a[type]' for field '$a[name]' is missing");
+				$fieldtype = $this->fieldtypes->get('FieldtypeText');
+			} else {
+				return parent::makeItem($a);
+			}
+		}
 		
-		$class = $fieldtype->getFieldClass($a);
-		if(empty($class) || $class === 'Field') return parent::makeItem($a);
-		
-		if(strpos($class, "\\") === false) $class = wireClassName($class, true);
-		if(!class_exists($class)) return parent::makeItem($a);
+		$a['type'] = $fieldtype;
+		$a['id'] = (int) $a['id'];
+		$a['flags'] = (int) $a['flags'];
 	
-		/** @var Field $field */
-		$field = new $class();
+		$class = $fieldtype->getFieldClass($a);
+		
+		if(empty($class) || $class === 'Field') {
+			$class = '';
+		} else if(strpos($class, "\\") === false) {
+			$class = wireClassName($class, true);
+			if(!class_exists($class)) $class = '';
+		}
+		
+		if(empty($class)) {
+			$field = new Field();
+		} else {
+			$field = new $class(); /** @var Field $field */
+		}
+	
 		$this->wire($field);
+		$field->setTrackChanges(false);
 		
 		foreach($a as $key => $value) {
-			$field->$key = $value;
+			$field->setRawSetting($key, $value);
 		}
 		
 		$field->resetTrackChanges(true);
 		
 		return $field;
+	}
+	
+	/**
+	 * Create a new Saveable item from a raw array ($row) and add it to $items
+	 *
+	 * @param array $row
+	 * @param WireArray|null $items
+	 * @return Saveable|WireData|Wire
+	 * @since 3.0.194
+	 *
+	 */
+	protected function initItem(array &$row, WireArray $items = null) {
+		/** @var Field $item */
+		$item = parent::initItem($row, $items);
+		$fieldtype = $item ? $item->type : null;
+		if($fieldtype) $fieldtype->initField($item);
+		return $item;
 	}
 
 	/**
@@ -207,11 +258,28 @@ class Fields extends WireSaveableItems {
 	 * 
 	 * #pw-internal
 	 * 
-	 * @return FieldsArray
+	 * @return FieldsArray|WireArray
 	 *
 	 */
 	public function getAll() {
-		return $this->fieldsArray; 
+		if($this->useLazy()) $this->loadAllLazyItems();
+		return $this->getWireArray();
+	}
+
+	/**
+	 * Get WireArray container that items are stored in
+	 *
+	 * @return WireArray
+	 * @since 3.0.194
+	 *
+	 */
+	public function getWireArray() {
+		if($this->fieldsArray === null) {
+			$this->fieldsArray = new FieldsArray();
+			$this->wire($this->fieldsArray);
+			$this->load($this->fieldsArray); 
+		}
+		return $this->fieldsArray;
 	}
 
 	/**
@@ -254,7 +322,7 @@ class Fields extends WireSaveableItems {
 		if($item->flags & Field::flagFieldgroupContext) throw new WireException("Field $item is not saveable because it is in a specific context"); 
 		if(!strlen($item->name)) throw new WireException("Field name is required"); 
 
-		$database = $this->wire('database');
+		$database = $this->wire()->database;
 		$isNew = $item->id < 1;
 		$prevTable = $database->escapeTable($item->prevTable);
 		$table = $database->escapeTable($item->getTable());
@@ -290,13 +358,13 @@ class Fields extends WireSaveableItems {
 
 		if($item->flags & Field::flagGlobal) {
 			// make sure that all template fieldgroups contain this field and add to any that don't. 
-			foreach($this->wire('templates') as $template) {
+			foreach($this->wire()->templates as $template) {
 				if($template->noGlobal) continue; 
 				$fieldgroup = $template->fieldgroup; 
 				if(!$fieldgroup->hasField($item)) {
 					$fieldgroup->add($item); 
 					$fieldgroup->save();
-					if($this->wire('config')->debug) $this->message("Added field '{$item->name}' to template/fieldgroup '{$fieldgroup->name}'"); 
+					$this->message("Added field '{$item->name}' to template/fieldgroup '$fieldgroup->name'", Notice::debug); 
 				}
 			}	
 		}
@@ -315,8 +383,7 @@ class Fields extends WireSaveableItems {
 	 *
 	 */
 	protected function checkFieldTable(Field $field) {
-		// if(!$this->wire('config')->debug) return;
-		$database = $this->wire('database'); 
+		$database = $this->wire()->database; 
 		$table = $database->escapeTable($field->getTable());
 		if(empty($table)) return;
 		$exists = $database->query("SHOW TABLES LIKE '$table'")->rowCount() > 0;
@@ -354,22 +421,29 @@ class Fields extends WireSaveableItems {
 	 */
 	public function ___delete(Saveable $item) {
 
-		if(!$this->fieldsArray->isValidItem($item)) throw new WireException("Fields::delete(item) only accepts items of type Field"); 
+		if(!$this->getWireArray()->isValidItem($item)) {
+			throw new WireException("Fields::delete(item) only accepts items of type Field");
+		}
 
 		// if the field doesn't have an ID, so it's not one that came from the DB
-		if(!$item->id) throw new WireException("Unable to delete from '" . $item->getTable() . "' for field that doesn't exist in fields table"); 
+		if(!$item->id) {
+			$table = $item->getTable();
+			throw new WireException("Unable to delete from '$table' for field that doesn't exist in fields table");
+		}
 
 		// if it's in use by any fieldgroups, then we don't allow it to be deleted
 		if($item->numFieldgroups()) {
 			$names = $item->getFieldgroups()->implode("', '", (string) "name");
-			throw new WireException("Unable to delete field '{$item->name}' because it is in use by these fieldgroups: '$names'");
+			throw new WireException("Unable to delete field '$item->name' because it is in use by these fieldgroups: '$names'");
 		}
 
 		// if it's a system field, it may not be deleted
-		if($item->flags & Field::flagSystem) throw new WireException("Unable to delete field '{$item->name}' because it is a system field."); 
+		if($item->flags & Field::flagSystem) {
+			throw new WireException("Unable to delete field '$item->name' because it is a system field.");
+		}
 
 		// delete entries in fieldgroups_fields table. Not really necessary since the above exception prevents this, but here in case that changes. 
-		$this->wire('fieldgroups')->deleteField($item); 
+		$this->wire()->fieldgroups->deleteField($item); 
 
 		// drop the field's table
 		if($item->type) $item->type->deleteField($item); 
@@ -403,7 +477,11 @@ class Fields extends WireSaveableItems {
 	
 		/** @var Field $item */
 		$item = parent::___clone($item, $name);
-		if($item) $item->prevTable = null;
+		if($item) {
+			$item->prevTable = null;
+			$item->prevName = ''; // prevent renamed hook
+		}
+		
 		return $item;
 	}
 
@@ -426,8 +504,13 @@ class Fields extends WireSaveableItems {
 		$data = array();
 
 		// make sure given field and fieldgroup are valid
-		if(!($field->flags & Field::flagFieldgroupContext)) throw new WireException("Field must be in fieldgroup context before its context can be saved");
-		if(!$fieldgroup->has($fieldOriginal)) throw new WireException("Fieldgroup $fieldgroup does not contain field $field");
+		if(!($field->flags & Field::flagFieldgroupContext)) {
+			throw new WireException("Field must be in fieldgroup context before its context can be saved");
+		}
+		
+		if(!$fieldgroup->has($fieldOriginal)) {
+			throw new WireException("Fieldgroup $fieldgroup does not contain field $field");
+		}
 
 		$field_id = (int) $field->id;
 		$fieldgroup_id = (int) $fieldgroup->id; 
@@ -536,7 +619,9 @@ class Fields extends WireSaveableItems {
 	 */
 	protected function ___changeFieldtype(Field $field1, $keepSettings = false) {
 
-		if(!$field1->prevFieldtype) throw new WireException("changeFieldType requires that the given field has had a type change"); 
+		if(!$field1->prevFieldtype) {
+			throw new WireException("changeFieldType requires that the given field has had a type change");
+		}
 
 		if(	($field1->type instanceof FieldtypeMulti && !$field1->prevFieldtype instanceof FieldtypeMulti) || 
 			($field1->prevFieldtype instanceof FieldtypeMulti && !$field1->type instanceof FieldtypeMulti)) {
@@ -561,7 +646,7 @@ class Fields extends WireSaveableItems {
 		$schema1 = array();
 		$schema2 = array();
 
-		$database = $this->wire('database'); 
+		$database = $this->wire()->database; 
 		$table1 = $database->escapeTable($field1->table); 
 		$table2 = $database->escapeTable($field2->table);
 
@@ -577,7 +662,7 @@ class Fields extends WireSaveableItems {
 			
 		foreach($schema1 as $key => $value) {
 			if(!in_array($value, $schema2)) {
-				if($this->wire('config')->debug) $this->message("changeFieldType loses table field '$value'"); 
+				$this->message("changeFieldType loses table field '$value'", Notice::debug); 
 				unset($schema1[$key]); 
 			}
 		}
@@ -778,7 +863,7 @@ class Fields extends WireSaveableItems {
 		if(!$field->type) return 0;
 
 		$options = array_merge($defaults, $options);
-		$database = $this->wire('database');
+		$database = $this->wire()->database;
 		$table = $database->escapeTable($field->getTable());
 		$useRowCount = false;
 		$schema = $field->type->getDatabaseSchema($field);
@@ -795,7 +880,7 @@ class Fields extends WireSaveableItems {
 			if($options['template'] instanceof Template) {
 				$template = $options['template'];
 			} else {
-				$template = $this->wire('templates')->get($options['template']);
+				$template = $this->wire()->templates->get($options['template']);
 			}
 
 			if(!$template) throw new WireException("Unknown template: $options[template]");
@@ -822,7 +907,7 @@ class Fields extends WireSaveableItems {
 			if(is_int($options['page'])) {
 				$pageID = $options['page'];
 			} else {
-				$page = $this->wire('pages')->get($options['page']);
+				$page = $this->wire()->pages->get($options['page']);
 				$pageID = $page->id;
 			}
 
@@ -887,8 +972,7 @@ class Fields extends WireSaveableItems {
 	 *
 	 */
 	public static function isNativeName($name) {
-		/** @var Fields $fields */
-		$fields = wire('fields');
+		$fields = wire()->fields;
 		return $fields->isNative($name);
 	}
 
@@ -991,6 +1075,102 @@ class Fields extends WireSaveableItems {
 	}
 
 	/**
+	 * Find fields by type
+	 * 
+	 * @param string|Fieldtype $type Fieldtype class name or object
+	 * @param array $options
+	 *  - `inherit` (bool): Also find types that inherit from given type? (default=true) 
+	 *  - `valueType` (string): Value type to return, one of 'field', 'id', or 'name' (default='field')
+	 *  - `indexType` (string): Index type to use, one of 'name', 'id', or '' blank for non-associative array (default='name')
+	 * @return array|Field[]
+	 * @since 3.0.194
+	 * 
+	 */
+	public function findByType($type, array $options = array()) {
+		
+		$defaults = array(
+			'inherit' => true, // also find fields using type inherited from given type or interface?
+			'valueType' => 'field', // one of 'field', 'id', or 'name'
+			'indexType' => 'name', // one of 'name', 'id', or '' blank for non associative array
+		);
+		
+		$options = array_merge($defaults, $options);
+		$valueType = $options['valueType'];
+		$indexType = $options['indexType'];
+		$inherit = $options['inherit'];
+		$matchTypes = array();
+		$matches = array();
+		
+		if($inherit) {
+			$typeName = wireClassName($type, true);
+			foreach($this->wire()->fieldtypes as $fieldtype) {
+				if($fieldtype instanceof $typeName) $matchTypes[$fieldtype->className()] = true;
+			}
+		} else {
+			$typeName = wireClassName($type);
+			$matchTypes[$typeName] = true;
+		}
+		
+		foreach($this->getWireArray() as $field) {
+			$fieldtype = $field->type;
+
+			if(!$fieldtype) continue;
+			if(!isset($matchTypes[$fieldtype->className()])) continue;
+
+			if($valueType === 'field') {
+				$value = $field;
+			} else if($valueType === 'name') {
+				$value = $field->name;
+			} else {
+				$value = $field->id;
+			}
+			if($indexType) {
+				$index = $field->get($options['indexType']);
+				$matches[$index] = $value;
+			} else {
+				$matches[] = $value;
+			}
+		}
+
+		if($this->useLazy()) {
+			foreach(array_keys($this->lazyItems) as $key) {
+				if(!isset($this->lazyItems[$key])) continue;
+				$row = $this->lazyItems[$key];
+				if(empty($row['type'])) continue;
+				$type = $row['type'];
+				if(!isset($matchTypes[$type])) continue;
+				if($valueType === 'field') {
+					$value = $this->getLazy((int) $row['id']);
+				} else if($valueType === 'name') {
+					$value = $row['name'];
+				} else {
+					$value = $row['id'];
+				}
+				if($indexType) {
+					$index = isset($data[$indexType]) ? $row[$indexType] : $row['id'];
+					$matches[$index] = $value;
+				} else {
+					$matches[] = $value;
+				}
+			}
+		}
+	
+		return $matches;
+	}
+
+	/**
+	 * Get all field names
+	 *
+	 * @param string $indexType One of 'name', 'id' or blank string for no index (default='')
+	 * @return array
+	 * @since 3.0.194
+	 *
+	 */
+	public function getAllNames($indexType = '') {
+		return $this->getAllValues('name', $indexType); 
+	}
+
+	/**
 	 * Get all flag names or get all flag names for given flags or Field
 	 * 
 	 * #pw-internal
@@ -1048,8 +1228,10 @@ class Fields extends WireSaveableItems {
 	 *
 	 */
 	public function _hasPermission(Field $field, $permission, Page $page = null, User $user = null) {
-		if($permission != 'edit' && $permission != 'view') throw new WireException('Specify either "edit" or "view"');
-		if(is_null($user)) $user = $this->wire('user');
+		if($permission != 'edit' && $permission != 'view') {
+			throw new WireException('Specify either "edit" or "view"');
+		}
+		if(is_null($user)) $user = $this->wire()->user;
 		if($user->isSuperuser()) return true;
 		if($page && $page->template && $page->template->fieldgroup->hasField($field)) {
 			// make sure we have a copy of $field that is in the context of $page
@@ -1060,7 +1242,7 @@ class Fields extends WireSaveableItems {
 			// field is access controlled
 			$has = false;
 			$roles = $permission == 'edit' ? $field->editRoles : $field->viewRoles;
-			if($permission == 'view' && in_array($this->wire('config')->guestUserRolePageID, $roles)) {
+			if($permission == 'view' && in_array($this->wire()->config->guestUserRolePageID, $roles)) {
 				// if guest has view permission, then all have view permission
 				$has = true; 
 			} else {
@@ -1141,6 +1323,116 @@ class Fields extends WireSaveableItems {
 	public function tableTools() {
 		if($this->tableTools === null) $this->tableTools = $this->wire(new FieldsTableTools());
 		return $this->tableTools;
+	}
+	
+	/**
+	 * Return the list of Fieldgroups using given field.
+	 *
+	 * #pw-internal
+	 *
+	 * @param Field|int|string Field to get fieldgroups for
+	 * @param bool $getCount Get count rather than FieldgroupsArray? (default=false) 3.0.182+
+	 * @return FieldgroupsArray|int WireArray of Fieldgroup objects or count if requested
+	 *
+	 */
+	public function getFieldgroups($field, $getCount = false) {
+
+		$fieldId = $this->_fieldId($field);
+		$fieldgroups = $this->wire()->fieldgroups;
+		$items = $getCount ? null : $this->wire(new FieldgroupsArray()); /** @var FieldgroupsArray $items */
+		$ids = array();
+		$count = 0;
+
+		$sql = "SELECT fieldgroups_id FROM fieldgroups_fields WHERE fields_id=:fields_id";
+		$query = $this->wire()->database->prepare($sql);
+		$query->bindValue(':fields_id', $fieldId, \PDO::PARAM_INT);
+		$query->execute();
+
+		while($row = $query->fetch(\PDO::FETCH_NUM)) {
+			$id = (int) $row[0];
+			$ids[$id] = $id;
+		}
+
+		$query->closeCursor();
+
+		foreach($ids as $id) {
+			$fieldgroup = $fieldgroups->get($id);
+			if(!$fieldgroup) continue;
+			if($items) $items->add($fieldgroup);
+			$count++;
+		}
+
+		return $getCount ? $count : $items;
+	}
+
+	/**
+	 * Return the list of of Templates using given field.
+	 *
+	 * #pw-internal
+	 *
+	 * @param Field|int|string Field to get templates for
+	 * @param bool $getCount Get count rather than FieldgroupsArray? (default=false)
+	 * @return TemplatesArray|int WireArray of Template objects or count when requested.
+	 * @since 3.0.195
+	 *
+	 */ 
+	public function getTemplates($field, $getCount = false) {
+		
+		$fieldId = $this->_fieldId($field);
+		$templates = $this->wire()->templates;
+		$items = $getCount ? null : $this->wire(new TemplatesArray()); /** @var TemplatesArray $items */
+		$count = 0;
+		$ids = array();
+		
+		if(!$fieldId) return $items;
+
+		$sql =
+			"SELECT fieldgroups_fields.fieldgroups_id, templates.id AS templates_id " .
+			"FROM fieldgroups_fields " .
+			"JOIN templates ON templates.fieldgroups_id=fieldgroups_fields.fieldgroups_id " .
+			"WHERE fieldgroups_fields.fields_id=:fields_id";
+
+		$query = $this->wire()->database->prepare($sql);
+		$query->bindValue(':fields_id', $fieldId, \PDO::PARAM_INT);
+		$query->execute();
+
+		while($row = $query->fetch(\PDO::FETCH_ASSOC)) {
+			$id = (int) $row['templates_id'];
+			$ids[$id] = $id;
+		}
+
+		$query->closeCursor();
+
+		foreach($ids as $id) {
+			$template = $templates->get($id);
+			if(!$template) continue;
+			if($items) $items->add($template);
+			$count++;
+		}
+
+		return $getCount ? $count : $items;
+	}
+
+	/**
+	 * Return field ID for given value (Field, field name, field ID) or 0 if none
+	 * 
+	 * #pw-internal
+	 * 
+	 * @param Field|string|int $field
+	 * @return int
+	 * @since 3.0.195
+	 * 
+	 */
+	public function _fieldId($field) {
+		if($field instanceof Field) {
+			$fieldId = $field->id;
+		} else if(ctype_digit("$field")) {
+			$fieldId = (int) $field;
+		} else {
+			$field = $this->get($field);
+			$fieldId = $field ? $field->id : 0;
+		}
+		return $fieldId;
 	}
 
 }

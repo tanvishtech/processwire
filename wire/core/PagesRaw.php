@@ -3,7 +3,7 @@
 /**
  * ProcessWire Pages Raw Tools
  *
- * ProcessWire 3.x, Copyright 2021 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  *
  */
@@ -28,14 +28,22 @@ class PagesRaw extends Wire {
 
 	/**
 	 * Find pages and return raw data from them in a PHP array
-	 *
+	 * 
 	 * @param string|array|Selectors $selector
-	 * @param string|Field|int|array $field Field/property name to get or array of them (or omit to get all)
+	 * @param string|array|Field $field Name of field/property to get, or array of them, CSV string, or omit to get all (default='')
 	 *  - Optionally use associative array to rename fields in returned value, i.e. `['title' => 'label']` returns 'title' as 'label' in return value.
+	 *  - Specify `parent.field_name` or `parent.parent.field_name`, etc. to return values from parent(s). 3.0.193+
+	 *  - Specify `references` or `references.field_name`, etc. to also return values from pages referencing found pages. 3.0.193+
+	 *  - Specify `meta` or `meta.name` to also return values from page meta data. 3.0.193+
 	 * @param array $options See options for Pages::find
 	 *  - `objects` (bool): Use objects rather than associative arrays? (default=false)
 	 *  - `entities` (bool|array): Entity encode string values? True, or specify array of field names. (default=false)
+	 *  - `nulls` (bool): Populate nulls for field values that are not present, rather than omitting them? (default=false) 3.0.198+
 	 *  - `indexed` (bool): Index by page ID? (default=true)
+	 *  - `flat` (bool|string): Flatten return value as `["field.subfield" => "value"]` rather than `["field" => ["subfield" => "value"]]`?
+	 *     Optionally specify field delimiter, otherwise a period `.` will be used as the delimiter. (default=false) 3.0.193+
+	 *  - Note the `objects` and `flat` options are not meant to be used together. 
+	 * 
 	 * @return array
 	 * @since 3.0.172
 	 *
@@ -56,6 +64,8 @@ class PagesRaw extends Wire {
 	 *  - `objects` (bool): Use objects rather than associative arrays? (default=false)
 	 *  - `entities` (bool|array): Entity encode string values? True, or specify array of field names. (default=false)
 	 *  - `indexed` (bool): Index by page ID? (default=false)
+	 *  - `flat` (bool|string): Flatten return value as `["field.subfield" => "value"]` rather than `["field" => ["subfield" => "value"]]`?
+	 *     Optionally specify field delimiter, otherwise a period `.` will be used as the delimiter. (default=false) 3.0.193+
 	 * @return array
 	 * @since 3.0.172
 	 *
@@ -67,7 +77,162 @@ class PagesRaw extends Wire {
 		$values = $this->find($selector, $field, $options);
 		return reset($values);
 	}
-	
+
+	/**
+	 * Get native pages table column value for given page ID
+	 *
+	 * This can only be used for native 'pages' table columns,
+	 * i.e. id, name, templates_id, status, parent_id, etc.
+	 *
+	 * @param int|array $pageId Page ID or array of page IDs
+	 * @param string|array $col Column name you want to get
+	 * @return int|string|array|null Returns column value or array of column values if $pageId was an array.
+	 *   When array is returned, it is indexed by page ID.
+	 * @param array $options
+	 *  - `cache` (bool): Allow use of memory cache to retrieve column value when available? (default=true)
+	 *     Used only if $pageId is an integer (not used when array of page IDs).
+	 * @throws WireException
+	 * @since 3.0.190
+	 *
+	 *
+	 */
+	public function col($pageId, $col, array $options = array()) {
+
+		$defaults = array(
+			'cache' => true
+		);
+
+		$options = array_merge($defaults, $options);
+
+		// delegate to cols() method when arguments require it
+		if(is_array($col)) {
+			return $this->cols($pageId, $col, $options);
+		} else if(is_array($pageId)) {
+			$value = array();
+			foreach($this->cols($pageId, $col) as $id => $a) {
+				$value[$id] = $a[$col];
+			}
+			return $value;
+		}
+
+		if(!ctype_alnum($col)) {
+			$sanitizer = $this->wire()->sanitizer;
+			if($sanitizer->fieldName($col) !== $col) {
+				throw new WireException("Invalid column name: $col");
+			}
+		}
+
+		$pageId = (int) $pageId;
+
+		// use cached value when available
+		if($options['cache']) {
+			$page = $this->pages->cacher()->getCache($pageId);
+			if($page) return $page->getUnformatted($col);
+		}
+
+		$database = $this->wire()->database;
+		$col = $database->escapeCol($col);
+
+		$query = $database->prepare("SELECT `$col` FROM pages WHERE id=:id");
+		$query->bindValue(':id', $pageId, (int) \PDO::PARAM_INT);
+		$query->execute();
+		$value = $query->rowCount() ? $query->fetchColumn() : null;
+		$query->closeCursor();
+
+		return $value;
+	}
+
+	/**
+	 * Get native pages table columns (plural) for given page ID
+	 *
+	 * This can only be used for native 'pages' table columns,
+	 * i.e. id, name, templates_id, status, parent_id, etc.
+	 *
+	 * @param int|array $pageId Page ID or array of page IDs
+	 * @param array|string $cols Names of columns to get or omit to get all columns
+	 * @param array $options
+	 *  - `cache` (bool): Allow use of memory cache to retrieve column value when available? (default=true)
+	 *     Used only if $pageId is an integer (not used when array of page IDs).
+	 * @return array Returns associative array on success or empty array if not found
+	 *   If $pageId argument was an array then it returns a page ID indexed array of
+	 *   associative arrays, one for each page.
+	 * @throws WireException
+	 * @since 3.0.190
+	 *
+	 */
+	public function cols($pageId, $cols = array(), array $options = array()) {
+
+		$defaults = array(
+			'cache' => true,
+		);
+
+		$options = array_merge($defaults, $options);
+		$sanitizer = $this->wire()->sanitizer;
+		$database = $this->wire()->database;
+		$query = null;
+		$removeIdInReturn = false;
+
+		if(!is_array($cols)) $cols = empty($cols) ? array() : array($cols);
+
+		foreach($cols as $key => $col) {
+			if(!ctype_alnum($col) && $sanitizer->fieldName($col) !== $col) {
+				unset($cols[$key]);
+			} else {
+				$cols[$key] = $database->escapeCol($col);
+			}
+		}
+
+		if(count($cols)) {
+			$colStr = '`' . implode('`,`', $cols) . '`';
+			if(is_array($pageId) && !in_array('id', $cols)) {
+				$colStr .= ', id';
+				$removeIdInReturn = true;
+			}
+		} else {
+			$colStr = '*';
+		}
+
+		if(is_array($pageId)) {
+			// multi page
+			$ids = array();
+			foreach($pageId as $id) {
+				$id = (int) $id;
+				if($id > 0) $ids[$id] = $id;
+			}
+			$ids = implode(',', $ids);
+			$query = $database->prepare("SELECT $colStr FROM pages WHERE id IN($ids)");
+			$query->execute();
+			$value = array();
+			while($row = $query->fetch(\PDO::FETCH_ASSOC)) {
+				$id = (int) $row['id'];
+				if($removeIdInReturn) unset($row['id']);
+				foreach($row as $k => $v) {
+					if(ctype_digit("$v")) $row[$k] = (int) $v;
+				}
+				$value[$id] = $row;
+			}
+
+		} else {
+			// single page
+			$pageId = (int) $pageId;
+			$page = ($options['cache'] ? $this->pages->cacher()->getCache($pageId) : null);
+			if($page) {
+				$value = array();
+				foreach($cols as $col) {
+					$value[$col] = $page->get($col);
+				}
+			} else {
+				$query = $database->prepare("SELECT $colStr FROM pages WHERE id=:id");
+				$query->bindValue(':id', $pageId, (int) \PDO::PARAM_INT);
+				$query->execute();
+				$value = $query->rowCount() ? $query->fetch(\PDO::FETCH_ASSOC) : array();
+			}
+		}
+
+		if($query) $query->closeCursor();
+
+		return $value;
+	}
 }
 
 /**
@@ -95,8 +260,10 @@ class PagesRawFinder extends Wire {
 	protected $defaults = array(
 		'indexed' => true,
 		'objects' => false, 
-		'entities' => false, 
+		'entities' => false,
+		'nulls' => false,
 		'findOne' => false,
+		'flat' => false,
 	);
 
 	/**
@@ -154,6 +321,14 @@ class PagesRawFinder extends Wire {
 	 * 
 	 */
 	protected $renameFields = array();
+
+	/**
+	 * Temporary fields set to $this->value that should be unset from return value
+	 * 
+	 * @var array
+	 * 
+	 */
+	protected $unsetFields = array();
 
 	/**
 	 * @var array
@@ -246,7 +421,7 @@ class PagesRawFinder extends Wire {
 		if(is_array($selector)) {
 			$val = reset($selector);
 			$key = key($selector);
-			if(ctype_digit("$key") && ctype_digit("$val")) $this->selectorIsPageIDs = true;
+			if(ctype_digit("$key") && !is_array($val) && ctype_digit("$val")) $this->selectorIsPageIDs = true;
 		} else {
 			$selectorString = (string) $selector;
 		}
@@ -285,21 +460,15 @@ class PagesRawFinder extends Wire {
 		} else if(is_string($field) && strpos($field, ',') !== false) {
 			// multiple fields requested in CSV string, we will return an array for each page
 			$this->requestFields = explode(',', $field);
+			foreach($this->requestFields as $k => $v) {
+				$this->requestFields[$k] = trim($v);
+			}
 			
 		} else if(is_array($field)) {
 			// one or more fields requested in array, we will return an array for each page
-			$requestFields = array();
-			$renameFields = array();
-			foreach($field as $key => $value) {
-				if(is_string($key) && !ctype_digit($key) && !is_array($value)) {
-					$requestFields[] = $key;
-					$renameFields[$key] = $value;
-				} else {
-					$requestFields[] = $value;
-				}
-			}
-			$this->requestFields = $requestFields;
-			$this->renameFields = $renameFields;
+			$this->requestFields = array();
+			$this->renameFields = array();
+			$this->processRequestFieldsArray($field);
 			
 		} else {
 			// one field requested in string or Field object
@@ -318,9 +487,9 @@ class PagesRawFinder extends Wire {
 			$this->splitFields();
 		}
 		
-		// detect 'objects' and 'entities' options in selector
+		// detect options in selector
 		$optionsValues = array();
-		foreach(array('objects', 'entities', 'options') as $name) {
+		foreach(array('objects', 'entities', 'flat', 'nulls', 'options') as $name) {
 			if($this->selectorIsPageIDs) continue;
 			if($selectorString && strpos($selectorString, "$name=") === false) continue;
 			if($fields->get($name)) continue; // if maps to a real field then ignore
@@ -345,7 +514,7 @@ class PagesRawFinder extends Wire {
 			}
 			if(!empty($result['selectors'])) $this->selector = $result['selectors'];
 		}
-		foreach(array('objects', 'entities') as $name) {
+		foreach(array('objects', 'entities', 'flat') as $name) {
 			if(in_array($name, $optionsValues)) $this->options[$name] = true;
 		}
 	}
@@ -385,6 +554,12 @@ class PagesRawFinder extends Wire {
 
 		$this->init($selector, $field, $options);
 		
+		if(count($this->parentFields) && !isset($this->nativeFields['parent_id'])) {
+			// we need parent_id if finding any parent fields
+			$this->nativeFields['parent_id'] = 'parent_id';
+			$this->unsetFields['parent_id'] = 'parent_id';
+		}
+		
 		// requested native pages table fields/properties
 		if(count($this->nativeFields) || $this->getAll || $this->getPaths) {
 			// one or more native pages table column(s) requested
@@ -394,6 +569,25 @@ class PagesRawFinder extends Wire {
 		// requested custom fields
 		if(count($this->customFields) || $this->getAll) {
 			$this->findCustom();
+		}
+		
+		// requested runtime fields
+		if(count($this->runtimeFields)) {
+			$this->findRuntime();
+		}
+	
+		// requested parent fields
+		if(count($this->parentFields)) {
+			$this->findParent();
+		}
+
+		// remove runtime only fields
+		if(count($this->unsetFields)) {
+			foreach($this->unsetFields as $name) {
+				foreach($this->values as $key => $value) {
+					unset($this->values[$key][$name]);
+				}
+			}
 		}
 
 		// reduce return value when expected
@@ -416,6 +610,17 @@ class PagesRawFinder extends Wire {
 				$this->entities($this->values);
 			}
 		}
+		
+		if($this->options['flat']) {
+			$delimiter = is_string($this->options['flat']) ? $this->options['flat'] : '.';
+			foreach($this->values as $key => $value) {
+				$this->values[$key] = $this->flattenValues($value, '', $delimiter);
+			}
+		}
+
+		if($this->options['nulls']) {
+			$this->populateNullValues($this->values);
+		}
 
 		if($this->options['objects']) {
 			$this->objects($this->values);
@@ -436,6 +641,7 @@ class PagesRawFinder extends Wire {
 		
 		$fields = $this->wire()->fields;
 		$fails = array();
+		$runtimeNames = array('meta', 'references');
 
 		// split request fields into custom fields and native (pages table) fields
 		foreach($this->requestFields as $key => $fieldName) {
@@ -461,6 +667,10 @@ class PagesRawFinder extends Wire {
 				$fieldName = $key;
 				if($fieldName === 'parent' || $fieldName === 'children') {
 					// passthru
+				} else if(in_array($fieldName, $runtimeNames) && !$fields->get($fieldName)) {
+					// passthru
+					$this->runtimeFields[$fullName] = $fullName;
+					continue;
 				} else {
 					$fieldObject = isset($this->customFields[$fieldName]) ? $this->customFields[$fieldName] : null;
 					if(!$fieldObject) $fieldObject = $fields->get($fieldName);
@@ -482,6 +692,10 @@ class PagesRawFinder extends Wire {
 				}
 				if($fieldName === 'parent' || $fieldName === 'children') {
 					// passthru
+				} else if(in_array($fieldName, $runtimeNames) && !$fields->get($fieldName)) {
+					// passthru
+					$this->runtimeFields[$fullName] = $fullName;
+					continue;
 				} else {
 					$fieldObject = isset($this->customFields[$fieldName]) ? $this->customFields[$fieldName] : null;
 					if(!$fieldObject) $fieldObject = $fields->get($fieldName);
@@ -494,12 +708,11 @@ class PagesRawFinder extends Wire {
 			}
 			
 			if($fieldName === 'parent') {
-				// @todo not yet supported
-				$this->parentFields[$fullName] = array($fieldName, $colName);
+				$this->parentFields[$fullName] = $colName;
 				
 			} else if($fieldName === 'children') {
 				// @todo not yet supported
-				$this->childrenFields[$fullName] = array($fieldName, $colName);
+				$this->childrenFields[$fullName] = $colName;
 
 			} else if($fullName === 'url' || $fullName === 'path') {
 				if($this->wire()->modules->isInstalled('PagePaths')) {
@@ -624,7 +837,7 @@ class PagesRawFinder extends Wire {
 			// one or more custom fields requested
 			if($this->ids === null) {
 				// only find IDs if we didn’t already in the nativeFields section
-				$this->ids = $this->findIDs($this->selector, false);
+				$this->setIds($this->findIDs($this->selector, false));
 			}
 			if(!count($this->ids)) return;
 			foreach($this->customFields as $fieldName => $field) {
@@ -653,7 +866,9 @@ class PagesRawFinder extends Wire {
 		$getCols = array();
 		$skipCols = array();
 		$getAllCols = false;
+		$getExternal = false; // true when request includes columns not in field’s DB schema
 		$pageRefCols = array();
+		$externalCols = array(); // columns that are external from field’s DB schema
 
 		/** @var FieldtypeMulti $fieldtypeMulti */
 		$fieldtype = $field->type;
@@ -667,7 +882,7 @@ class PagesRawFinder extends Wire {
 		$table = $database->escapeTable($field->getTable());
 		$sorts = array();
 
-		if(empty($table)) return;
+		if(empty($table) || empty($schema) || $fieldtype instanceof FieldtypeFieldsetOpen) return;
 
 		if(empty($cols)) { 
 			// no cols specified
@@ -689,24 +904,28 @@ class PagesRawFinder extends Wire {
 			
 		} else if(reset($cols) === '*') {
 			$getAllCols = true;
+			if(wireInstanceOf($field->type, 'FieldtypeOptions')) $getExternal = true;
 			
 		} else {
 			foreach($cols as $key => $col) {
-				$col = $sanitizer->fieldName($col);
-				$col = $database->escapeCol($col);
+				$col = $sanitizer->name($col);
+				if(empty($col)) continue;
 				if(isset($schema[$col])) {
-					$getCols[$col] = $col;
+					$getCols[$col] = $database->escapeCol($sanitizer->fieldName($col));
 				} else if($fieldtypePage || $fieldtypeRepeater) {
 					$pageRefCols[$col] = $col;
 				} else {
-					// unknown column
+					// unknown or external column
+					$getCols['data'] = 'data';
+					$externalCols[$col] = $col;
+					$getExternal = true;
 				}
 			}
 			if(count($pageRefCols)) {
 				// get just the data column when a field within a Page reference is asked for
 				$getCols['data'] = 'data';
 			}
-			if(count($getCols) === 1 && !$this->getMultiple) {
+			if(count($getCols) === 1 && !$this->getMultiple && count($externalCols) < 2) {
 				// if only getting single field we will populate its value rather than 
 				// its value in an associative array
 				$getArray = false;
@@ -730,6 +949,7 @@ class PagesRawFinder extends Wire {
 
 		$this->ids(true); // converts this->ids to CSV string
 		$idsCSV = &$this->ids;
+		if(empty($idsCSV)) return;
 		$colSQL = $getAllCols ? '*' : '`' . implode('`,`', $getCols) . '`';
 		if(!$getAllCols && !in_array('pages_id', $getCols)) $colSQL .= ',`pages_id`';
 		
@@ -807,10 +1027,82 @@ class PagesRawFinder extends Wire {
 				$this->findCustomFieldtypePage($field, $fieldName, $pageRefCols);
 			}
 		}
+		
+		if($getExternal) {
+			if(wireInstanceOf($fieldtype, 'FieldtypeOptions')) {
+				$this->findCustomFieldtypeOptions($field, $externalCols, $getArray, $getAllCols);
+			}
+		}
 	}
-	
+
+	/**
+	 * Find custom Options fieldtype columns
+	 * 
+	 * Options field stores its values/titles in separate table.
+	 * 
+	 * To use, specify one of the following in the fields to get (where field_name is an options field name):
+	 * 
+	 * - `field_name` to just include the IDs of the selected options for each page.
+	 * - `field_name.*` to include all available properties for selected options for each page.
+	 * - `field_name.title` to include the selected option titles.
+	 * - `field_name.value` to include the selected option values. 
+	 *
+	 * @param Field $field
+	 * @param array $cols
+	 * @param bool $getArray
+	 * @param bool $getAllCols
+	 * @since 3.0.193
+	 *
+	 */
+	protected function findCustomFieldtypeOptions(Field $field, $cols, $getArray, $getAllCols) {
+		/** @var FieldtypeOptions $fieldtype */
+		$fieldtype = $field->type;
+		$fieldName = $field->name;
+		$options = $fieldtype->getOptions($field);
+		$firstColName = reset($cols);
+
+		foreach($this->values as $pageId => $data) {
+			if(!isset($data[$fieldName])) continue;
+			foreach($data[$fieldName] as $key => $optionValue) {
+				if(is_array($optionValue)) {
+					$optionId = (int) $optionValue['data'];
+				} else if(ctype_digit("$optionValue")) {
+					$optionId = (int) $optionValue;
+				} else {
+					continue; // not likely
+				}
+				/** @var SelectableOption $option */
+				$option = $options->get((int) $optionId);
+				if(!$option) {
+					// unknown option
+				} else if($getAllCols) {
+					$a = $option->getArray();
+					unset($a['sort']);
+					$this->values[$pageId][$fieldName][$key] = $a;
+				} else if($getArray) {
+					$this->values[$pageId][$fieldName][$key] = array();
+					foreach($cols as $colName) {
+						$value = $option->get($colName);
+						if(!is_string($value) && !is_int($value)) $value = null;
+						$this->values[$pageId][$fieldName][$key][$colName] = $option->get($colName);
+					}
+				} else {
+					$value = $option->get($firstColName); // i.e. title, value, id, title1234, etc.
+					$this->values[$pageId][$fieldName][$key] = (is_string($value) || is_int($value) ? $value : null);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Find and apply values for Page reference fields
+	 * 
+	 * @param Field $field
+	 * @param string $fieldName
+	 * @param array $pageRefCols
+	 * 
+	 */
 	protected function findCustomFieldtypePage(Field $field, $fieldName, array $pageRefCols) {
-		// print_r($values);
 		$pageRefIds = array();
 		foreach($this->values as $pageId => $row) {
 			if(!isset($row[$fieldName])) continue;
@@ -840,15 +1132,15 @@ class PagesRawFinder extends Wire {
 			}
 		}
 	}
-
+	
 	/**
 	 * Find/populate all custom fields
-	 * 
+	 *
 	 */
 	protected function findCustomAll() {
-		
+
 		$idsByTemplate = array();
-		
+
 		foreach($this->ids() as $id) {
 			if(!isset($this->values[$id])) continue;
 			$row = $this->values[$id];
@@ -856,12 +1148,223 @@ class PagesRawFinder extends Wire {
 			if(!isset($idsByTemplate[$templateId])) $idsByTemplate[$templateId] = array();
 			$idsByTemplate[$templateId][$id] = $id;
 		}
-		
+
 		foreach($idsByTemplate as $templateId => $pageIds) {
 			$template = $this->wire()->templates->get($templateId);
 			if(!$template) continue;
 			foreach($template->fieldgroup as $field) {
-				$this->findCustomField($field, array()); 
+				$this->findCustomField($field, array());
+			}
+		}
+	}
+
+	/**
+	 * Find and apply values for parent.[field]
+	 * 
+	 * @since 3.0.193
+	 * 
+	 */
+	protected function findParent() {
+		
+		$ids = array();
+		
+		foreach($this->values as $pageId => $data) {
+			$parentId = $data['parent_id'];
+			if(!isset($ids[$parentId])) $ids[$parentId] = array();
+			$ids[$parentId][] = $pageId;
+		}
+		
+		$finder = new PagesRawFinder($this->pages);
+		$this->wire($finder);
+		$options = $this->options;
+		$options['indexed'] = true;
+		$parentFields = array_values($this->parentFields);
+		
+		if(!$this->getMultiple && count($parentFields) < 2) {
+			$parentFields = reset($parentFields);
+		}
+		
+		$rows = $finder->find(array_keys($ids), $parentFields, $options);
+		
+		foreach($rows as $parentId => $row) {
+			foreach($ids[$parentId] as $pageId) {
+				$this->values[$pageId]['parent'] = $row;
+			}
+		}
+	}
+	
+	/**
+	 * Find runtime generated fields
+	 *
+	 * @since 3.0.193
+	 *
+	 */
+	protected function findRuntime() {
+
+		$runtimeFields = array();
+		$fieldNames = $this->runtimeFields;
+
+		unset($fieldNames['url'], $fieldNames['path']);
+
+		if(empty($fieldNames)) return;
+
+		if($this->ids === null) {
+			$this->setIds($this->findIDs($this->selector, false));
+		}
+		
+		foreach($fieldNames as $fieldName) {
+			$colName = '';
+			if(strpos($fieldName, '.')) list($fieldName, $colName) = explode('.', $fieldName, 2);
+			if(!isset($runtimeFields[$fieldName])) $runtimeFields[$fieldName] = array();
+			if($colName) $runtimeFields[$fieldName][] = $colName;
+		}
+
+		if(isset($runtimeFields['meta'])) {
+			$this->findMeta($runtimeFields['meta']);
+		}
+
+		if(isset($runtimeFields['references'])) {
+			$this->findReferences($runtimeFields['references']);
+		}
+	}
+
+	/**
+	 * Populate 'meta' to (form pages_meta table) to the result values
+	 *
+	 * @param array $names
+	 * @since 3.0.193
+	 *
+	 */
+	protected function findMeta(array $names) {
+
+		if(empty($this->ids)) return;
+		$this->ids(true);
+
+		$getAll = $this->getAll || in_array('*', $names, true) || empty($names);
+		if($getAll) $names = array();
+
+		$sql = "SELECT source_id, name, data FROM pages_meta WHERE source_id IN($this->ids)";
+		$query = $this->wire()->database->prepare($sql);
+		$query->execute();
+
+		while($row = $query->fetch(\PDO::FETCH_ASSOC)) {
+			$id = (int) $row['source_id'];
+			$name = $row['name'];
+			$data = json_decode($row['data'], true);
+			if(!isset($this->values[$id]['meta'])) $this->values[$id]['meta'] = array();
+			if($getAll || in_array($name, $names, true)) $this->values[$id]['meta'][$name] = $data;
+		}
+		
+		foreach(array_keys($this->values) as $id) {
+			if(!isset($this->values[$id]['meta'])) $this->values[$id]['meta'] = array();
+		}
+
+		$query->closeCursor();
+	}
+
+
+	/**
+	 * Populate a 'references' to the raw results that includes other pages referencing the found ones
+	 * 
+	 * To use this specify `references` in the fields to return. Or, to get page references that are 
+	 * indexed by field name, specify `references.field` instead. To get something more than the id
+	 * of page references, specify properties or fields as `references.field_name` replacing `field_name`
+	 * with a page property or field name, i.e. `references.title`. 
+	 * 
+	 * @param array $colNames
+	 * @since 3.0.193
+	 * 
+	 */
+	protected function findReferences(array $colNames) {
+		
+		$database = $this->wire()->database;
+		$pageFields = array();
+		
+		if(empty($this->ids)) return;
+		
+		foreach($this->wire()->fields as $field) {
+			if($field->type instanceof FieldtypePage) $pageFields[$field->name] = $field;
+		}
+		
+		if(empty($pageFields)) return;
+		
+		foreach($this->values as $id => $data) {
+			$this->values[$id]['references'] = array();
+		}
+
+		$showField = array_search('field', $colNames);
+		if($showField !== false) {
+			unset($colNames[$showField]);
+			$showField = true;
+		}
+
+		$this->ids(true);
+		$fromPageIds = array();
+		$findPageIds = array();
+		
+		foreach($pageFields as $pageField) {
+			$fieldName = $pageField->name;
+			
+			/** @var Field $pageField */
+			$table = $pageField->getTable();
+			$sql = "SELECT pages_id, data FROM $table WHERE data IN($this->ids)";
+			$query = $database->prepare($sql);
+			$query->execute();
+			
+			while($row = $query->fetch(\PDO::FETCH_NUM)) {
+				$fromPageId = (int) $row[0]; // pages_id
+				$toPageId = (int) $row[1]; // data
+				if(!isset($fromPageIds[$toPageId])) $fromPageIds[$toPageId] = array();
+				if(!isset($fromPageIds[$toPageId][$fieldName])) $fromPageIds[$toPageId][$fieldName] = array();
+				$fromPageIds[$toPageId][$fieldName][] = $fromPageId;
+				$findPageIds[] = $fromPageId;
+			}
+			
+			$query->closeCursor();
+		}
+
+		if(!count($findPageIds)) return;
+		
+		if(empty($colNames)) {
+			// shortcut: we only need to include the ids 
+			foreach($this->values as $toPageId => $data) {
+				if(!isset($fromPageIds[$toPageId])) continue;
+				if($showField) {
+					$references = $fromPageIds[$toPageId];
+				} else {
+					$references = array();
+					foreach($fromPageIds[$toPageId] as $fieldName => $ids) {
+						$references = array_merge($references, $ids);
+					}
+				}
+				$this->values[$toPageId]['references'] = $references;
+			}
+			return;
+		}
+
+		// load properties/fields from found references
+		$finder = new PagesRawFinder($this->pages);
+		$this->wire($finder);
+		$options = $this->options;
+		$options['indexed'] = true;
+		$colNames = $this->getMultiple || count($colNames) > 1 ? $colNames : reset($colNames);
+		$rows = $finder->find($findPageIds, $colNames, $options);
+		
+		foreach($this->values as $toPageId => $data) {
+			if(!isset($fromPageIds[$toPageId])) continue;
+			foreach($fromPageIds[$toPageId] as $fieldName => $fromIds) {
+				foreach($fromIds as $fromId) {
+					if(!isset($rows[$fromId])) continue;
+					$row = $rows[$fromId];
+					if($showField) {
+						if(!isset($this->values[$toPageId]['references'][$fieldName])) {
+							$this->values[$toPageId]['references'][$fieldName] = array();
+						}
+						$this->values[$toPageId]['references'][$fieldName][$fromId] = $row;
+					} else {
+						$this->values[$toPageId]['references'][$fromId] = $row;
+					}
+				}
 			}
 		}
 	}
@@ -890,7 +1393,7 @@ class PagesRawFinder extends Wire {
 		}
 
 		// if selector is not array of page IDs then let pages.findIDs handle it
-		if(!is_array($selector) || !isset($selector[0]) || !ctype_digit((string) $selector[0])) {
+		if(!is_array($selector) || !isset($selector[0]) || is_array($selector[0]) || !ctype_digit((string) $selector[0])) {
 			return $this->pages->findIDs($selector, $options);
 		}
 		
@@ -1030,6 +1533,150 @@ class PagesRawFinder extends Wire {
 			$this->ids = explode(',', $this->ids);
 		}
 		return $this->ids;
+	}
+
+	/**
+	 * Set the found IDs and init the $this->values array
+	 * 
+	 * @param array $ids
+	 * @since 3.0.193
+	 * 
+	 */
+	protected function setIds(array $ids) {
+		$this->ids = $ids;
+		foreach($ids as $id) {
+			$this->values[$id] = array();
+		}
+	}
+
+	/**
+	 * Flatten multidimensional values from array['a']['b']['c'] to array['a.b.c']
+	 * 
+	 * @param array $values
+	 * @param string $prefix Prefix for recursive use
+	 * @param string $delimiter 
+	 * @return array
+	 * @since 3.0.193
+	 * 
+	 */
+	protected function flattenValues(array $values, $prefix = '', $delimiter = '.') {
+		
+		$flat = array();
+		
+		foreach($values as $key => $value) {
+			
+			if(!is_array($value)) {
+				if(ctype_digit("$key") && $prefix) {
+					// integer keys map to array values
+					$k = rtrim($prefix, $delimiter);
+					if(!isset($flat[$k])) $flat[$k] = array();
+					if(!is_array($flat[$k])) $flat[$k] = array($flat[$k]);
+					$flat[$k][$key] = $value;
+				} else {
+					$flat["$prefix$key"] = $value;
+				}	
+				continue;
+			}
+			
+			$a = $this->flattenValues($value, "$prefix$key$delimiter", $delimiter);
+			
+			if(!is_int($key)) {
+				$flat = $flat + $a;
+				continue;
+			}
+			
+			$converted = false;
+
+			// convert categories.1234.title => categories.title = array(1234 => 'title', ...);
+			foreach($a as $k => $v) {
+				if(strpos($k, "$delimiter$key$delimiter") === false) continue;
+				list($k1, $k2) = explode("$delimiter$key$delimiter", $k); 
+				unset($a[$k]);
+				$kk = "$k1$delimiter$k2";
+				if(!isset($flat[$kk])) $flat[$kk] = array();
+				$flat[$kk][$key] = $v;
+				$converted = true;
+			}
+			
+			if(!$converted) $flat = $flat + $a;
+		}
+		return $flat;
+	}
+
+	/**
+	 * Populate null values for requested fields that were not present (the 'nulls' option)
+	 * 
+	 * Applies only if specific fields were requested. 
+	 * 
+	 * @var array $values
+	 * @since 3.0.198
+	 * 
+	 */
+	protected function populateNullValues(&$values) {
+		$emptyValue = array();
+		if(count($this->requestFields)) {
+			// specific fields requested
+			foreach($this->requestFields as $name) {
+				if(isset($this->renameFields[$name])) $name = $this->renameFields[$name];
+				if(!$this->options['flat'] && strpos($name, '.')) list($name,) = explode('.', $name, 2);
+				$emptyValue[$name] = null;
+			}
+			foreach($values as $key => $value) {
+				$values[$key] = array_merge($emptyValue, $value);
+			}
+		} else {
+			// all fields requested
+			$templates = $this->wire()->templates;
+			$emptyValues = array();
+			foreach($values as $key => $value) {
+				if(!isset($value['templates_id'])) continue;
+				$tid = (int) $value['templates_id'];
+				if(isset($emptyValues[$tid])) {
+					$emptyValue = $emptyValues[$tid];
+				} else {
+					$template = $templates->get((int) $value['templates_id']);
+					if(!$template) continue;
+					$emptyValue = array();
+					foreach($template->fieldgroup as $field) {
+						$emptyValue[$field->name] = null;
+					}
+					$emptyValues[$tid] = $emptyValue;
+				}
+				$values[$key] = array_merge($emptyValue, $value);
+			}
+		}
+	}
+
+	/**
+	 * Process given array of values to populate $this->requestFields and $this->renameFields
+	 * 
+	 * @param array $values
+	 * @param string $prefix Prefix for recursive use
+	 * @since 3.0.194
+	 * 
+	 */
+	protected function processRequestFieldsArray(array $values, $prefix = '') {
+		
+		if($prefix) $prefix = rtrim($prefix, '.') . '.';
+		
+		foreach($values as $key => $value) {
+			if(ctype_digit("$key")) {
+				// i.e. [ 0 => 'field_name', 1 => 'another_field' ]
+				if(is_string($value) && !ctype_digit("$value")) {
+					$this->requestFields[] = $prefix . $value;
+				} else {
+					// error, not supported 
+				}
+			} else if(is_array($value)) {
+				// i.e. [ 'field_name' => [ 'id', 'title' ]
+				$this->processRequestFieldsArray($value, $prefix . $key);
+				
+			} else {
+				// rename i.e. [ 'field_name' => 'new_field_name' ]
+				$this->requestFields[] = $prefix . $key;
+				$this->renameFields[$prefix . $key] = $value;
+			}
+		}
 	}
 
 	protected function unknownFieldsException(array $fieldNames, $context = '') {

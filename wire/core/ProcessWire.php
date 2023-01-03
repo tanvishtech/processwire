@@ -17,7 +17,7 @@ require_once(__DIR__ . '/boot.php');
  * ~~~~~
  * #pw-body
  * 
- * ProcessWire 3.x, Copyright 2021 by Ryan Cramer
+ * ProcessWire 3.x, Copyright 2022 by Ryan Cramer
  * https://processwire.com
  *
  * Default API vars (A-Z) 
@@ -79,7 +79,7 @@ class ProcessWire extends Wire {
 	 * Reversion revision number
 	 * 
 	 */
-	const versionRevision = 184;
+	const versionRevision = 200;
 
 	/**
 	 * Version suffix string (when applicable)
@@ -291,6 +291,7 @@ class ProcessWire extends Wire {
 		$config->setWire($this);
 		
 		$this->debug = $config->debug; 
+		if($this->debug) Debug::timer('all');
 		$this->instanceID = self::addInstance($this);
 		$this->setWire($this);
 		
@@ -404,7 +405,7 @@ class ProcessWire extends Wire {
 			$config->debug = $debugIf;
 		}
 
-		if($config->useFunctionsAPI) {
+		if($config->useFunctionsAPI && !function_exists("\\ProcessWire\\pages")) {
 			$file = $config->paths->core . 'FunctionsAPI.php';
 			/** @noinspection PhpIncludeInspection */
 			include_once($file);
@@ -552,9 +553,11 @@ class ProcessWire extends Wire {
 		$pages = $this->wire('pages', new Pages($this), true);
 
 		$this->initVar('fieldtypes', $fieldtypes);
+		if($this->debug) Debug::timer('init.fields.templates.fieldgroups');
 		$this->initVar('fields', $fields);
 		$this->initVar('fieldgroups', $fieldgroups);
 		$this->initVar('templates', $templates);
+		if($this->debug) Debug::saveTimer('init.fields.templates.fieldgroups');
 		$this->initVar('pages', $pages);
 	
 		if($this->debug) Debug::timer('boot.load.permissions'); 

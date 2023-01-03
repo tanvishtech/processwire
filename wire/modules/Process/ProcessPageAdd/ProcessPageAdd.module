@@ -98,7 +98,7 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 		return array(
 			'title' => __('Page Add', __FILE__),          
 			'summary' => __('Add a new page', __FILE__), 
-			'version' => 108, 
+			'version' => 109, 
 			'permanent' => true, 
 			'permission' => 'page-edit',
 			'icon' => 'plus-circle',
@@ -168,20 +168,7 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 		$sanitizer = $this->wire()->sanitizer;
 		
 		$data = $session->getFor($this, 'nav');
-		
-		if(!empty($data)) {
-			// check that session cache data is still current
-			foreach($templates as $template) {
-				if($template->modified > $data['modified']) {
-					$data = array();
-					$session->remove($this, 'nav');
-					$session->remove($this, 'numAddable');
-					$this->message("Clearing 'Add New' page cache", Notice::debug);
-					break;
-				}
-			}
-		}
-		
+
 		if(empty($data)) {
 
 			$data = array(
@@ -282,6 +269,19 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 		if($config->ajax) header("Content-Type: application/json");
 		
 		return json_encode($data);
+	}
+
+	/**
+	 * Clear "add new" session caches
+	 * 
+	 * @since 3.0.194
+	 * 
+	 */
+	public function clearSessionCaches() {
+		$session = $this->wire()->session;
+		$session->removeFor($this, 'nav');
+		$session->removeFor($this, 'numAddable');
+		$this->message("Clearing 'Add New' page cache", Notice::debug);
 	}
 
 	/**
@@ -829,6 +829,8 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 		$pages = $this->wire()->pages;
 		$fields = $this->wire()->fields;
 		$user = $this->wire()->user;
+		
+		$lockedStates = array(Inputfield::collapsedNoLocked, Inputfield::collapsedYesLocked, Inputfield::collapsedBlankLocked);
 
 		/** @var InputfieldForm $form */
 		$form = $modules->get('InputfieldForm');
@@ -847,7 +849,7 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 						$_field = $this->template->fieldgroup->getField($field->id, true); // get in context of fieldgroup
 						if($_field) $field = $_field;
 					}
-					if(in_array($field->collapsed, array(Inputfield::collapsedNoLocked, Inputfield::collapsedYesLocked))) continue;
+					if(in_array($field->collapsed, $lockedStates)) continue;
 					$inputfield = $field->getInputfield($page);
 					if($inputfield) {
 						if($this->template && $this->template->noLang) $inputfield->useLanguages = false;
@@ -861,7 +863,7 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 			/** @var Field $field */
 			$field = $this->template->fieldgroup->getField('title', true);
 			if($field) {
-				if(in_array($field->collapsed, array(Inputfield::collapsedNoLocked, Inputfield::collapsedYesLocked))) {
+				if(in_array($field->collapsed, $lockedStates)) {
 					// skip it
 				} else {
 					$inputfield = $field->getInputfield($page);
@@ -917,10 +919,10 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 			$template = $this->template ? $this->template : reset($allowedTemplates); 
 			/** @var InputfieldHidden $field */
 			$field = $modules->get('InputfieldHidden');
-			$field->attr('id+name', 'template'); 
 			$field->attr('value', $template->id); 
 			if(count($template->fieldgroup) == 1 && $template->fieldgroup->hasField('title')) $numPublishable++;
 			$field->attr('data-publish', $numPublishable);
+			if($template->noLang) $field->attr('data-nolang', 1);
 			
 		} else {
 			// multiple templates are possible so give them a select
@@ -1094,7 +1096,7 @@ class ProcessPageAdd extends Process implements ConfigurableModule, WirePageEdit
 
 		$this->deleteOldTempPages();
 		// allow for nameFormat to come from a name_format GET variable
-		$nameFormat = $input->get('name_format');
+		$nameFormat = (string) $input->get('name_format');
 		if(strlen($nameFormat)) {
 			$nameFormat = $sanitizer->chars($sanitizer->text($nameFormat), '-_:./| [alpha][digit]', '-');
 		} else {

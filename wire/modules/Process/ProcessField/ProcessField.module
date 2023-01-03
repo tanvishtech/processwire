@@ -332,16 +332,19 @@ class ProcessField extends Process implements ConfigurableModule {
 	 *
 	 */
 	public function ___execute() {
-		if($this->wire('config')->ajax) return $this->renderListJSON();
+		
+		if($this->wire()->config->ajax) return $this->renderListJSON();
 	
-		/** @var Session $session */
-		$session = $this->wire('session');
+		$session = $this->wire()->session;
+		$modules = $this->wire()->modules;
+		$textTools = $this->wire()->sanitizer->getTextTools();
+		
 		$out = $this->getListFilterForm()->render() . "\n<div id='ProcessFieldList'>\n";
 		$fieldsByTag = array();
 		$untaggedLabel = $this->_('Untagged');
 		$hasFilters = $session->getFor($this, 'filterTemplate') || $session->getFor($this, 'filterFieldtype');
 		$showSystem = $session->getFor($this, 'filterShowSystem');
-		$collapsedTags = $this->wire('modules')->getConfig($this, 'collapsedTags');
+		$collapsedTags = $modules->getConfig($this, 'collapsedTags');
 		$caseTags = array(); // indexed by lowercase version of tag
 		if(!is_array($collapsedTags)) $collapsedTags = array();
 		$systemTag = $this->_x('System', 'tag'); // Tag applied to the group of built-in/system fields
@@ -355,7 +358,7 @@ class ProcessField extends Process implements ConfigurableModule {
 				}
 			}
 			if(empty($tags)) {
-				$tag = strtolower($untaggedLabel);
+				$tag = $textTools->strtolower($untaggedLabel);
 				if(!isset($fieldsByTag[$tag])) $fieldsByTag[$tag] = array();
 				$fieldsByTag[$tag][$field->name] = $field;
 				$caseTags[$tag] = $untaggedLabel;
@@ -377,7 +380,7 @@ class ProcessField extends Process implements ConfigurableModule {
 			foreach($fieldsByTag as $tag => $fields) {
 				ksort($fields);
 				/** @var InputfieldMarkup $f */
-				$f = $this->modules->get('InputfieldMarkup');
+				$f = $modules->get('InputfieldMarkup');
 				$f->entityEncodeLabel = false;
 				$f->label = $caseTags[$tag];
 				$f->icon = 'tags';
@@ -394,7 +397,7 @@ class ProcessField extends Process implements ConfigurableModule {
 		$out .= "\n</div><!--/#ProcessFieldList-->";
 
 		/** @var InputfieldButton $button */
-		$button = $this->modules->get('InputfieldButton');
+		$button = $modules->get('InputfieldButton');
 		$button->id = 'add_field_button'; 
 		$button->href = "./add"; 
 		$button->value = $this->_x('Add New Field', 'list button'); 
@@ -402,15 +405,14 @@ class ProcessField extends Process implements ConfigurableModule {
 		$button->showInHeader();
 		$out .= $button->render();
 		
-		$button = $this->modules->get('InputfieldButton');
+		$button = $modules->get('InputfieldButton');
 		$button->id = 'tags_button';
 		$button->href = './tags/';
 		$button->icon = 'tags';
 		$button->value = $this->labels['manage-tags'];
-		//$button->setSecondary();
 		$out .= $button->render();
 
-		$button = $this->modules->get('InputfieldButton');
+		$button = $modules->get('InputfieldButton');
 		$button->id = 'import_button';
 		$button->href = "./import/";
 		$button->value = $this->labels['import'];
@@ -418,7 +420,7 @@ class ProcessField extends Process implements ConfigurableModule {
 		$button->setSecondary();
 		$out .= $button->render();
 		
-		$button = $this->modules->get('InputfieldButton');
+		$button = $modules->get('InputfieldButton');
 		$button->id = 'export_button'; 
 		$button->href = "./export/";
 		$button->value = $this->labels['export'];
@@ -426,7 +428,7 @@ class ProcessField extends Process implements ConfigurableModule {
 		$button->setSecondary();
 		$out .= $button->render();
 
-		if($this->input->get('nosave')) {
+		if($this->wire()->input->get('nosave')) {
 			$session->removeFor($this, 'filterTemplate');
 			$session->removeFor($this, 'filterFieldtype');
 			$session->removeFor($this, 'filterShowSystem');
@@ -461,8 +463,8 @@ class ProcessField extends Process implements ConfigurableModule {
 		$this->breadcrumb('../', $labels['fields']);
 		
 		$tags = $fields->getTags();
-		$editTag = $input->get->name('edit_tag');
-		$saveTag = $input->post->name('save_tag');
+		$editTag = $sanitizer->words($input->get->text('edit_tag'), array('separator' => '-'));
+		$saveTag = $sanitizer->words($input->post->text('save_tag'), array('separator' => '-'));
 		
 		$collapsedTags = $modules->getConfig($this, 'collapsedTags');
 		if(!is_array($collapsedTags)) $collapsedTags = array();
@@ -473,8 +475,9 @@ class ProcessField extends Process implements ConfigurableModule {
 			$this->headline("$labels[tag] - " . (isset($tags[$editTag]) ? $tags[$editTag] : $editTag));
 			
 			/** @var InputfieldName $f */
-			$f = $modules->get('InputfieldName');
+			$f = $modules->get('InputfieldText');
 			$f->attr('name', 'rename_tag');
+			$f->label = $this->_('Tag name');
 			$f->attr('value', isset($tags[$editTag]) ? $tags[$editTag] : $editTag);
 			$f->collapsed = Inputfield::collapsedYes;
 			$f->addClass('InputfieldIsSecondary', 'wrapClass');
@@ -515,8 +518,10 @@ class ProcessField extends Process implements ConfigurableModule {
 			
 		} else if($saveTag) {
 			// save tag
+			
 			$tagFields = $sanitizer->names($input->post('tag_fields'));
-			$renameTag = $input->post->templateName('rename_tag');
+			if(!is_array($tagFields)) $tagFields = array();
+			$renameTag = $sanitizer->words($input->post->text('rename_tag'), array('separator' => '-')); 
 			$isCollapsed = (int) $input->post('tag_collapsed');
 			$removeTag = '';
 			if($renameTag && $renameTag != $saveTag) {
@@ -578,9 +583,10 @@ class ProcessField extends Process implements ConfigurableModule {
 
 			$form->attr('method', 'get');
 			/** @var InputfieldName $f */
-			$f = $modules->get('InputfieldName');
+			$f = $modules->get('InputfieldText');
 			$f->attr('name', 'edit_tag');
 			$f->label = $this->_('Add new tag');
+			$f->description = $this->_('You may use letters, digits or underscore.'); 
 			$f->icon = 'tag';
 			$f->addClass('InputfieldIsSecondary', 'wrapClass');
 			$form->add($f);
@@ -1558,6 +1564,7 @@ class ProcessField extends Process implements ConfigurableModule {
 			$field->pattern = '^[_a-zA-Z][_a-zA-Z0-9]*$';
 			$field->placeholder = 'a-z A-Z 0-9 _';
 			$field->icon = 'code';
+			$field->attr('required', 'required');
 			$nameField = $field;
 			$form->add($field); 
 
@@ -1566,6 +1573,7 @@ class ProcessField extends Process implements ConfigurableModule {
 			$field->label = $this->labels['type'];
 			$field->attr('name', 'type'); 
 			$field->required = true; 
+			$field->attr('required', 'required');
 			$field->columnWidth = $languages ? 50 : 34;
 			$field->icon = 'database';
 			if($this->field->type) {
@@ -1778,7 +1786,7 @@ class ProcessField extends Process implements ConfigurableModule {
 	 */
 	protected function buildEditFormAccess() {
 		
-		if($this->field->type instanceof FieldtypeFieldsetOpen) return null;
+		if(!$this->allowAccessTab()) return null;	
 
 		$config = $this->wire()->config;
 		$adminTheme = $this->wire()->adminTheme;
@@ -1795,6 +1803,9 @@ class ProcessField extends Process implements ConfigurableModule {
 		$f->attr('name', 'useRoles');
 		$f->label = $this->_('Do you want to manage access control for this field?');
 		$f->description = $this->_('When enabled, you can limit view and edit access to this field by user role.');
+		if($this->field->hasFlag(Field::flagSystem)) {
+			$f->notes = $this->_('This is a system field, enabling access control is NOT recommend.');
+		}
 		$f->icon = 'key';
 		$f->addOption(1, $this->labels['yes']);
 		$f->addOption(0, $this->labels['no']);
@@ -1885,8 +1896,10 @@ class ProcessField extends Process implements ConfigurableModule {
 		$form->attr('title', $this->_x('Advanced', 'tab'));
 	
 		$tags = array();
+		$textTools = $this->wire()->sanitizer->getTextTools();
 		foreach($this->wire()->fields->getTags() as $tagKey => $tagValue) {
-			$tags[strtolower($tagKey)] = $tagValue;
+			$tagKey = $textTools->strtolower($tagKey);
+			$tags[$tagKey] = $tagValue;
 		}
 		ksort($tags);
 		/** @var InputfieldTextTags $field */
@@ -2103,7 +2116,7 @@ class ProcessField extends Process implements ConfigurableModule {
 		if(!$field) return false;
 
 		$field->label = $field->label . ' ' . $this->_('(copy)');
-		$this->message($this->_('Cloned Field') . " - $field->name => $cloneField->name");
+		$this->message($this->_('Cloned Field') . " - $cloneField->name => $field->name");
 
 		if($field->type instanceof FieldtypeFieldsetOpen && strpos($cloneField->name, '_END') === false) {
 			// handle a cloned fieldset by also cloning its closer
@@ -2215,6 +2228,7 @@ class ProcessField extends Process implements ConfigurableModule {
 
 		/** @var Languages $languages */
 		$languages = $this->wire('languages');
+		$sanitizer = $this->wire()->sanitizer;
 	
 		foreach($wrapper->children() as $inputfield) {
 
@@ -2269,6 +2283,10 @@ class ProcessField extends Process implements ConfigurableModule {
 			
 			if(($name == 'showIf' || $name == 'requiredIf') && strlen($value)) {
 				$this->checkInputfieldDependencySetting($inputfield);
+			}
+			
+			if($name === 'tags') {
+				$value = $sanitizer->words($value);
 			}
 
 			$this->field->set($name, $value); 
@@ -2643,7 +2661,8 @@ class ProcessField extends Process implements ConfigurableModule {
 		/** @var Session $session */
 		$session = $this->wire('session');
 		$session->CSRF->validate();
-	
+		
+		$changedTemplates = array();
 		$isFieldset = false;
 		$fields = array($this->field);
 		if($this->field->type instanceof FieldtypeFieldsetOpen) {
@@ -2656,6 +2675,7 @@ class ProcessField extends Process implements ConfigurableModule {
 		
 		// first handle additions, since it's possible for removals to take a long time or remote chance of timeout
 		foreach($this->wire('templates') as $template) {
+			$templateChanged = false;
 	
 			foreach($fields as $key => $field) {
 					
@@ -2696,17 +2716,24 @@ class ProcessField extends Process implements ConfigurableModule {
 							$field->name, $template->name, $f->name));
 					} else {
 						$template->fieldgroup->insertAfter($field, $f);
+						$changedTemplates[$template->id] = $template;
 						$this->message(sprintf($this->_('Added field "%1$s" to template "%2$s" after "%3$s"'),
 							$field->name, $template->name, $f->name));
 					}
+					$templateChanged = true;
 				}
 			}
-			$template->fieldgroup->save();
+			
+			if($templateChanged) {
+				$template->fieldgroup->save();
+				$template->save();
+			}
 		}
 		
 		// next handle removals
 		foreach($this->wire('templates') as $template) {
 			$removeFieldID = (int) $this->wire('input')->post("remove_{$this->field->id}_template_$template->id");
+			$templateChanged = false;
 			if($removeFieldID && $removeFieldID === (int) $this->field->id) {
 				$template->fieldgroup->remove($this->field);
 				if($this->field->type instanceof FieldtypeFieldsetOpen) {
@@ -2715,6 +2742,7 @@ class ProcessField extends Process implements ConfigurableModule {
 				}
 				try {
 					$template->fieldgroup->save();
+					$templateChanged = true;
 					$this->message(sprintf($this->_('Removed field "%1$s" from template "%2$s"'), $this->field->name, $template->name));
 				} catch(\Exception $e) {
 					$this->error(
@@ -2724,6 +2752,7 @@ class ProcessField extends Process implements ConfigurableModule {
 					); 
 				}
 			}
+			if($templateChanged) $template->save();
 		}
 		
 		$this->wire('session')->redirect("./edit?id={$this->field->id}"); 
@@ -2840,8 +2869,8 @@ class ProcessField extends Process implements ConfigurableModule {
 				$valueStr = ((int) $value) ? $labels['on'] : $labels['off'];
 			}
 			
-			$originalValueStr = str_replace('|', ' ', $originalValueStr);
-			$valueStr = str_replace('|', ' ', $valueStr);
+			$originalValueStr = str_replace('|', ' ', (string) $originalValueStr);
+			$valueStr = str_replace('|', ' ', (string) $valueStr);
 			$change = array(
 				"name" => $name, 
 				"value" => $valueStr,
@@ -3012,7 +3041,7 @@ class ProcessField extends Process implements ConfigurableModule {
 			);
 		} else if($segment === 'tags') {
 			$data = array(
-				'edit_tag' => $input->get->name('edit_tag'), 
+				'edit_tag' => $sanitizer->word($input->get->text('edit_tag')), 
 			);
 		} else if($segment === 'edit') {
 			$data = array(
@@ -3044,7 +3073,25 @@ class ProcessField extends Process implements ConfigurableModule {
 		} else {
 			$segment = '';
 		}
+		foreach($data as $key => $value) $data[$key] = urlencode($value);
 		return $page->url() . $segment . (count($data) ? '?' . implode('&', $data) : '');
+	}
+
+	/**
+	 * Allow use of the “Access” tab?
+	 * 
+	 * @return bool
+	 * @since 3.0.197
+	 * 
+	 */
+	protected function allowAccessTab() {
+		if(!$this->field) return false;
+		if($this->field->type instanceof FieldtypeFieldsetOpen) return false;
+		if(!$this->wire()->user->isSuperuser()) return false;
+		if($this->field->useRoles) return true; // access control already enabled
+		if(!$this->field->hasFlag(Field::flagSystem)) return true;
+		if($this->wire()->config->advanced) return true;
+		return false;
 	}
 
 	/**

@@ -110,7 +110,7 @@ class FieldtypeFileConfiguration extends Wire {
 
 		$this->getConfigInputfieldsOutputFormat($field, $fs);
 
-		require_once($this->wire()->config->paths->modules . 'Inputfield/InputfieldFile/config.php');
+		require_once($this->wire()->config->paths('InputfieldFile') . 'config.php');
 		$configuration = new InputfieldFileConfiguration();
 		$this->wire($configuration);
 		$descriptionFieldset = $configuration->getConfigInputfieldsDescription($field); 
@@ -195,7 +195,7 @@ class FieldtypeFileConfiguration extends Wire {
 		$example = array(
 			'// ' . $this->_('Display all files with tag “sidebar”'), 
 			'foreach($page->images as $file) {',
-			'  if($file->hasTag("sidebar") {', 
+			'  if($file->hasTag("sidebar")) {', 
 			'    echo "<img src=\'$file->url\' alt=\'$file->description\'>";',
 			'  }',
 			'}',
@@ -433,7 +433,7 @@ class FieldtypeFileConfiguration extends Wire {
 				$f->val(0);
 			} else if(!$customTpl) {
 				// create custom template
-				$customTpl = $templates->add($customTplEnabledName);
+				$customTpl = $templates->add($customTplEnabledName, array('noGlobal' => true));
 				$this->message(sprintf($this->_('Created custom fields template: %s'), $customTpl->name));
 			}
 			

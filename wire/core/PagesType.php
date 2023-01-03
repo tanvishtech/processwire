@@ -199,15 +199,15 @@ class PagesType extends Wire implements \IteratorAggregate, \Countable {
 	
 		$validTemplate = $this->hasValidTemplate($page);
 		if(!$validTemplate && count($this->templates)) {
-			$validTemplates = implode(', ', array_keys($this->templates));
-			$this->error("Page $page->path must have template: $validTemplates");
+			// $validTemplates = implode(', ', array_keys($this->templates));
+			// $this->error("Page $page->path ($page->template) must have template: $validTemplates");
 			return false;
 		}
 		
 		$validParent = $this->hasValidParent($page);
 		if(!$validParent && count($this->parents)) {
-			$validParents = implode(', ', $this->parents);
-			$this->error("Page $page->path must have parent: $validParents");
+			// $validParents = implode(', ', $this->parents);
+			// $this->error("Page $page->path must have parent: $validParents");
 			return false;
 		}
 		
@@ -371,7 +371,13 @@ class PagesType extends Wire implements \IteratorAggregate, \Countable {
 	 */
 	public function get($selectorString) {
 		
+		$pages = $this->wire()->pages;
+		$page = null;
+		
+		if(empty($selectorString)) return $pages->newNullPage();
+		
 		$options = $this->getLoadOptions(array('getOne' => true));
+		
 		if(empty($options['caller'])) {
 			$caller = $this->className() . ".get($selectorString)";
 			$options['caller'] = $caller;
@@ -381,23 +387,20 @@ class PagesType extends Wire implements \IteratorAggregate, \Countable {
 
 		if(ctype_digit("$selectorString")) {
 			// selector string contains a page ID
-			if(count($this->templates) == 1 && count($this->parents) == 1) {
+			if(count($this->templates) === 1 && count($this->parents) === 1) {
 				// optimization for when there is only 1 template and 1 parent
 				$options['template'] = $this->template;
 				$options['parent_id'] = $this->parent_id; 
-				$page = $this->wire('pages')->getById(array((int) $selectorString), $options);
-				return $page ? $page : $this->wire('pages')->newNullPage();
 			} else {
-				// multiple possible templates/parents
-				$page = $this->wire('pages')->getById(array((int) $selectorString), $options); 
-				return $page; 
+				// multiple templates and/or parents possible
 			}
+			$page = $pages->getById(array((int) $selectorString), $options);
 			
 		} else if(strpos($selectorString, '=') === false) { 
 			// selector string contains no operators, so it is a page name or path
 			if(strpos($selectorString, '/') === false) {
 				// selector string contains no operators or slashes, so we assume it to be a page ame
-				$s = $this->sanitizer->name($selectorString);
+				$s = $this->wire()->sanitizer->name($selectorString);
 				if($s === $selectorString) $selectorString = "name=$s";
 			} else {
 				// page path, can pass through
@@ -406,13 +409,22 @@ class PagesType extends Wire implements \IteratorAggregate, \Countable {
 		} else {
 			// selector string with operators, can pass through
 		}
+	
+		if($page === null) {
+			$page = $pages->get($this->selectorString($selectorString), array(
+				'caller' => $caller,
+				'loadOptions' => $options
+			));
+		}
 		
-		$page = $this->pages->get($this->selectorString($selectorString), array(
-			'caller' => $caller, 
-			'loadOptions' => $options
-		)); 
-		if($page->id && !$this->isValid($page)) $page = $this->wire('pages')->newNullPage();
-		if($page->id) $this->loaded($page);
+		if($page->id) { 
+			if($this->isValid($page)) {
+				$this->loaded($page);
+			} else {
+				$pages->uncache($page);
+				$page = $pages->newNullPage();
+			}
+		}
 		
 		return $page; 
 	}
@@ -494,6 +506,7 @@ class PagesType extends Wire implements \IteratorAggregate, \Countable {
 	 * #pw-internal
 	 *
 	 */
+	#[\ReturnTypeWillChange] 
 	public function getIterator() {
 		return $this->find("id>0, sort=name", array(
 			'caller' => $this->className() . '.getIterator()'
@@ -621,6 +634,7 @@ class PagesType extends Wire implements \IteratorAggregate, \Countable {
 	 * @see Pages::count()
 	 * 
 	 */
+	#[\ReturnTypeWillChange]
 	public function count($selectorString = '', array $options = array()) {
 		if(empty($selectorString) && empty($options) && count($this->parents) == 1) {
 			return $this->getParent()->numChildren();

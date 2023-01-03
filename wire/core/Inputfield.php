@@ -168,13 +168,20 @@ abstract class Inputfield extends WireData implements Module {
 	 * 
 	 */
 	const collapsedPopulated = 5;
-
+	
 	/**
 	 * Not collapsed, value visible but not editable
 	 * #pw-group-collapsed-constants
+	 *
+	 */
+	const collapsedNoLocked = 6;
+
+	/**
+	 * Collapsed when blank, value visible but not editable
+	 * #pw-group-collapsed-constants
 	 * 
 	 */
-	const collapsedNoLocked = 7;
+	const collapsedBlankLocked = 7;
 
 	/**
 	 * Collapsed unless opened (value becomes visible but not editable)
@@ -644,7 +651,7 @@ abstract class Inputfield extends WireData implements Module {
 	 *
 	 * - For most public API use, you might consider using the the shorter `Inputfield::attr()` method instead. 
 	 * 
-	 * - When setting the `class` attribute is is preferable to use the `Inputfield::addClass()` method. 
+	 * - When setting the `class` attribute it is preferable to use the `Inputfield::addClass()` method. 
 	 * 
 	 * - The `$key` argument may contain multiple keys by being specified as an array, or by being a string with multiple 
 	 *   keys separated by "+" or "|", for example: `$inputfield->setAttribute("id+name", "template")`.
@@ -1448,12 +1455,13 @@ abstract class Inputfield extends WireData implements Module {
 		$field->description = $this->_("How should this field be displayed in the editor?");
 		$field->addOption(self::collapsedNo, $this->_('Open'));
 		$field->addOption(self::collapsedNever, $this->_('Open + Cannot be closed'));
+		$field->addOption(self::collapsedNoLocked, $this->_('Open + Locked (not editable)'));
 		$field->addOption(self::collapsedBlank, $this->_('Open when populated + Closed when blank'));
 		if($this->hasFieldtype !== false) {
 			$field->addOption(self::collapsedBlankAjax, $this->_('Open when populated + Closed when blank + Load only when opened (AJAX)') . " †");
 		}
-		$field->addOption(self::collapsedNoLocked, $this->_('Open when populated + Closed when blank + Locked (not editable)'));
-		$field->addOption(self::collapsedPopulated, $this->_('Open when blank + Closed when populated')); 
+		$field->addOption(self::collapsedBlankLocked, $this->_('Open when populated + Closed when blank + Locked (not editable)'));
+		$field->addOption(self::collapsedPopulated, $this->_('Open when blank + Closed when populated'));
 		$field->addOption(self::collapsedYes, $this->_('Closed')); 
 		$field->addOption(self::collapsedYesLocked, $this->_('Closed + Locked (not editable)'));
 		if($this->hasFieldtype !== false) {

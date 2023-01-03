@@ -81,8 +81,12 @@ class PagesEditor extends Wire {
 			if(!$template) throw new WireException("Unknown template");
 		}
 
-		$page = $this->pages->newPage($template); 
-		$page->parent = $parent;
+		$options = array('template' => $template, 'parent' => $parent);
+		if(isset($values['pageClass'])) {
+			$options['pageClass'] = $values['pageClass'];
+			unset($values['pageClass']);
+		}
+		$page = $this->pages->newPage($options); 
 
 		$exceptionMessage = "Unable to add new page using template '$template' and parent '{$page->parent->path}'.";
 
@@ -102,6 +106,11 @@ class PagesEditor extends Wire {
 			unset($values['title']);
 		}
 
+		if(isset($values['status'])) {
+			$page->status = $values['status'];
+			unset($values['status']);
+		}
+
 		// save page before setting $values just in case any fieldtypes
 		// require the page to have an ID already (like file-based)
 		if(!$this->pages->save($page)) throw new WireException($exceptionMessage);
@@ -111,6 +120,17 @@ class PagesEditor extends Wire {
 			unset($values['id'], $values['parent'], $values['template']); // fields that may not be set from this array
 			foreach($values as $key => $value) $page->set($key, $value);
 			$this->pages->save($page);
+		}
+		
+		// get a fresh copy of the page
+		if($page->id) {
+			$inserted = $page->_inserted;
+			$of = $this->pages->outputFormatting;
+			if($of) $this->pages->setOutputFormatting(false);
+			$p = $this->pages->getById($page->id, $template, $page->parent_id);
+			if($p->id) $page = $p;
+			if($of) $this->pages->setOutputFormatting(true);
+			$page->setQuietly('_inserted', $inserted);
 		}
 
 		return $page;
@@ -349,7 +369,7 @@ class PagesEditor extends Wire {
 		foreach($page->template->fieldgroup as $field) {
 			if($page->isLoaded($field->name)) continue; // value already set
 			if(!$page->hasField($field)) continue; // field not valid for page
-			if(!strlen($field->defaultValue)) continue; // no defaultValue property defined with Fieldtype config inputfields
+			if(!strlen("$field->defaultValue")) continue; // no defaultValue property defined with Fieldtype config inputfields
 			try {
 				$blankValue = $field->type->getBlankValue($page, $field);
 				if(is_object($blankValue) || is_array($blankValue)) continue; // we don't currently handle complex types
@@ -582,7 +602,11 @@ class PagesEditor extends Wire {
 			}
 		} while($keepTrying && (++$tries < $maxTries));
 
-		if($result && ($isNew || !$page->id)) $page->id = (int) $database->lastInsertId();
+		if($result && ($isNew || !$page->id)) {
+			$page->id = (int) $database->lastInsertId();
+			$page->setQuietly('_inserted', time());
+		}
+		
 		if($options['forceID']) $page->id = (int) $options['forceID'];
 
 		return $result;
@@ -1101,26 +1125,8 @@ class PagesEditor extends Wire {
 		// trigger a hook to indicate delete is ready and WILL occur
 		$this->pages->deleteReady($page, $options);
 
-		foreach($page->fieldgroup as $field) {
-			if(!$field->type->deletePageField($page, $field)) {
-				$this->error("Unable to delete field '$field' from page '$page'");
-			}
-		}
-
-		try {
-			if(PagefilesManager::hasPath($page)) $page->filesManager->emptyAllPaths();
-		} catch(\Exception $e) {
-		}
-
-		$page->meta()->removeAll();
+		$this->clear($page);
 		
-		/** @var PagesAccess $access */
-		$access = $this->wire(new PagesAccess());
-		$access->deletePage($page);
-	
-		// delete entirely from pages_parents table
-		$this->pages->parents()->delete($page);
-
 		$database = $this->wire()->database;
 		$query = $database->prepare("DELETE FROM pages WHERE id=:page_id LIMIT 1"); // QA
 		$query->bindValue(":page_id", $page->id, \PDO::PARAM_INT);
@@ -1568,6 +1574,320 @@ class PagesEditor extends Wire {
 		$query->execute();
 		
 		return count($sorts);
+	}
+
+	/**
+	 * Replace one page with another (work in progress)
+	 * 
+	 * @param Page $oldPage
+	 * @param Page $newPage
+	 * @return Page
+	 * @throws WireException
+	 * @since 3.0.189 But not yet available in public API
+	 * 
+	 */
+	protected function replace(Page $oldPage, Page $newPage) {
+		
+		if($newPage->numChildren) {
+			throw new WireException('Page with children cannot replace another');
+		}
+
+		$database = $this->wire()->database;
+		
+		$this->pages->cacher()->uncache($oldPage);
+		$this->pages->cacher()->uncache($newPage);
+		
+		$prevId = $newPage->id;
+		$id = $oldPage->id;
+		$parent = $oldPage->parent;
+		$prevTemplate = $oldPage->template;
+		
+		$newPage->parent = $parent;
+		$newPage->templatePrevious = $prevTemplate;
+
+		$this->clear($oldPage, array(
+			'clearParents' => false, 
+			'clearAccess' => $prevTemplate->id != $newPage->template->id, 
+			'clearSortfield' => false,
+		)); 
+		
+		$binds = array(
+			':id' => $id, 
+			':parent_id' => $parent->id, 
+			':prev_id' => $prevId, 
+		);
+		
+		$sqls = array();
+		$sqls[] = 'UPDATE pages SET id=:id, parent_id=:parent_id WHERE id=:prev_id';
+	
+		foreach($newPage->template->fieldgroup as $field) {
+			/** @var Field $field */
+			$field->type->replacePageField($newPage, $oldPage, $field);
+		}
+		
+		foreach($sqls as $sql) {
+			$query = $database->prepare($sql);
+			foreach($binds as $bindKey => $bindValue) {
+				if(strpos($sql, $bindKey) === false) continue;
+				$query->bindValue($bindKey, $bindValue);
+				$query->execute();
+			}
+		}
+
+		$newPage->id = $id;
+		
+		$this->save($newPage);
+		
+		$page = $this->pages->getById($id, $newPage->template, $parent->id);
+		
+		return $page;
+	}
+
+	/**
+	 * Clear a page of its data
+	 * 
+	 * @param Page $page
+	 * @param array $options
+	 * @return bool
+	 * @throws WireException
+	 * @since 3.0.189
+	 * 
+	 */
+	public function clear(Page $page, array $options = array()) {
+		
+		$defaults = array(
+			'clearMethod' => 'delete', // 'delete' or 'empty'
+			'haltOnError' => false,
+			'clearFields' => true,
+			'clearFiles' => true, 
+			'clearMeta' => true, 
+			'clearAccess' => true, 
+			'clearSortfield' => true,
+			'clearParents' => true,
+		);
+
+		$options = array_merge($defaults, $options);
+		$errors = array();
+		$halt = false;
+
+		if($options['clearFields']) {
+			foreach($page->fieldgroup as $field) {
+				/** @var Field $field  */
+				if($options['clearMethod'] === 'delete') {
+						$result = $field->type->deletePageField($page, $field);
+					} else {
+						$result = $field->type->emptyPageField($page, $field);
+					}
+				if(!$result) {	
+					$errors[] = "Unable to clear field '$field' from page $page";
+					$halt = $options['haltOnError'];
+					if($halt) break;
+				}
+			}
+		}
+		
+		if($options['clearFiles'] && !$halt) {
+			$error = "Error clearing files for page $page"; 
+			try {
+				if(PagefilesManager::hasPath($page)) {
+					if(!$page->filesManager->emptyAllPaths()) {
+						$errors[] = $error;
+						$halt = $options['haltOnError'];
+					}
+				}
+			} catch(\Exception $e) {
+				$errors[] = $error . ' - ' . $e->getMessage();
+				$halt = $options['haltOnError'];
+			}
+		}
+
+		if($options['clearMeta'] && !$halt) {
+			try {
+				$page->meta()->removeAll();
+			} catch(\Exception $e) {
+				$errors[] = "Error clearing meta for page $page";
+				$halt = $options['haltOnError'];
+			}
+		}
+
+		if($options['clearAccess'] && !$halt) {
+			/** @var PagesAccess $access */
+			$access = $this->wire(new PagesAccess());
+			$access->deletePage($page);
+		}
+
+		if($options['clearParents'] && !$halt) {
+			// delete entirely from pages_parents table
+			$this->pages->parents()->delete($page);
+		}
+
+		if($options['clearSortfield'] && !$halt) {
+			$this->pages->sortfields()->delete($page);
+		}
+		
+		if(count($errors) || $halt) {
+			foreach($errors as $error) {
+				$this->error($error);
+			}
+			return false;
+		}
+
+		return true;
+	}
+	
+	/**
+	 * Prepare options for Pages::new(), Pages::newPage() 
+	 * 
+	 * Converts given array, selector string, template name, object or int to array of options. 
+	 * 
+	 * #pw-internal
+	 *
+	 * @param array|string|int $options
+	 * @return array
+	 * @since 3.0.191
+	 *
+	 */
+	public function newPageOptions($options) {
+		
+		if(empty($options)) return array(); 
+
+		$template = null; /** @var Template|null $template */
+		$parent = null;
+		$class = '';
+
+		if(is_array($options)) {
+			// ok
+		} else if(is_string($options)) {
+			if(strpos($options, '=') !== false) {
+				$selectors = new Selectors($options);
+				$this->wire($selectors);
+				$options = array();
+				foreach($selectors as $selector) {
+					$options[$selector->field()] = $selector->value;
+				}
+			} else if(strpos($options, '/') === 0) {
+				$options = array('path' => $options);
+			} else {
+				$options = array('template' => $options);
+			}
+		} else if(is_object($options)) {
+			$options = $options instanceof Template ? array('template' => $options) : array();
+		} else if(is_int($options)) {
+			$template = $this->wire()->templates->get($options);
+			$options = $template ? array('template' => $template) : array();
+		} else {
+			$options = array();
+		}
+
+		// only use property 'parent' rather than 'parent_id'
+		if(!empty($options['parent_id']) && empty($options['parent'])) {
+			$options['parent'] = $options['parent_id'];
+			unset($options['parent_id']);
+		}
+
+		// only use property 'template' rather than 'templates_id'
+		if(!empty($options['templates_id']) && empty($options['template'])) {
+			$options['template'] = $options['templates_id'];
+			unset($options['templates_id']);
+		}
+
+		// page class (pageClass)
+		if(!empty($options['pageClass'])) {
+			// ok
+			$class = $options['pageClass'];
+			unset($options['pageClass']); 
+		} else if(!empty($options['class']) && !$this->wire()->fields->get('class')) {
+			// alias for pageClass, so long as there is not a field named 'class'
+			$class = $options['class'];
+			unset($options['class']);
+		}
+
+		// identify requested template
+		if(isset($options['template'])) {
+			$template = $options['template'];
+			if(!is_object($template)) {
+				$template = empty($template) ? null : $this->wire()->templates->get($template);
+			}
+			unset($options['template']);
+		}
+
+		// convert parent path to parent page object
+		if(!empty($options['parent'])) {
+			if(is_object($options['parent'])) {
+				$parent = $options['parent'];
+			} else if(ctype_digit("$options[parent]")) {
+				$parent = (int) $options['parent'];
+			} else {
+				$parent = $this->pages->getByPath($options['parent']);
+				if(!$parent->id) $parent = null;
+			}
+			unset($options['parent']);
+		}
+
+		// name and parent can be detected from path, when specified
+		if(!empty($options['path'])) {
+			$path = trim($options['path'], '/');
+			if(strpos($path, '/') === false) $path = "/$path";
+			$parts = explode('/', $path); // note index[0] is blank
+			$name = array_pop($parts);
+			if(empty($options['name']) && !empty($name)) {
+				// detect name from path
+				$options['name'] = $name;
+			}
+			if(empty($parent) && !$this->pages->loader()->isLoading()) {
+				// detect parent from path
+				$parentPath = count($parts) ? implode('/', $parts) : '/';
+				$parent = $this->pages->getByPath($parentPath);
+				if(!$parent->id) $parent = null;
+			}
+			unset($options['path']);
+		}
+
+		// detect template from parent (when possible)
+		if(!$template && !empty($parent) && empty($options['id']) && !$this->pages->loader()->isLoading()) {
+			$parent = is_object($parent) ? $parent : $this->pages->get($parent);
+			if($parent->id) {
+				if(count($parent->template->childTemplates) === 1) {
+					$template = $parent->template->childTemplates()->first();
+				}
+			} else {
+				$parent = null;
+			}
+		}
+
+		// detect parent from template (when possible)
+		if($template && empty($parent) && empty($options['id']) && !$this->pages->loader()->isLoading()) { 
+			if(count($template->parentTemplates) === 1) {
+				$parentTemplates = $template->parentTemplates();
+				if($parentTemplates->count()) {
+					$numParents = $this->pages->count("template=$parentTemplates, include=all");
+					if($numParents === 1) {
+						$parent = $this->pages->get("template=$parentTemplates");
+						if(!$parent->id) $parent = null;
+					}
+				}
+			}	
+		}
+	
+		// detect class from template
+		if(empty($class) && $template) $class = $template->getPageClass();
+
+		if($parent) $options['parent'] = $parent;
+		if($template) $options['template'] = $template;
+		if($class) $options['pageClass'] = $class;
+		
+		if(isset($options['id'])) {
+			if(ctype_digit("$options[id]") && (int) $options['id'] > 0) {
+				$options['id'] = (int) $options['id'];
+				if($parent && "$options[id]" === "$parent") unset($options['parent']);
+			} else if(((int) $options['id']) === -1) {
+				$options['id'] = (int) $options['id']; // special case allowed for access control tests
+			} else {
+				unset($options['id']);
+			}
+		}
+
+		return $options;
 	}
 
 	/**

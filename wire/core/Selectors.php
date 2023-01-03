@@ -206,12 +206,13 @@ class Selectors extends WireArray {
 		$not = false;
 		if(!isset(self::$selectorTypes[$operator])) {
 			// unrecognized operator, see if it's an alternate placement for NOT "!" statement
-			$op = ltrim($operator, '!');
+			$op = ltrim("$operator", '!');
 			if(isset(self::$selectorTypes[$op])) {
 				$operator = $op;
 				$not = true;
 			} else {
 				if(is_array($value)) $value = implode('|', $value);
+				if(is_array($field)) $field = implode('|', $field);
 				$debug = $this->wire('config')->debug ? "field='$field', value='$value', selector: '$this->selectorStr'" : "";
 				if(empty($operator)) $operator = '[empty]';
 				throw new WireException("Unknown Selector operator: '$operator' -- was your selector value properly escaped? $debug");
@@ -1476,6 +1477,7 @@ class Selectors extends WireArray {
 		static $digits = '_0123456789';
 
 		$has = false;
+		$str = (string) $str;
 
 		foreach(self::$selectorTypes as $operator => $unused) {
 
